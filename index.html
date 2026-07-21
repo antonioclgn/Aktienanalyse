@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aktienanalyse</title>
+</head>
+<body>
+  <h1>Aktienanalyse</h1>
+
+  <div style="position: relative; max-width: 400px;">
+    <input id="symbol-search" type="text" placeholder="Aktie oder ETF suchen (z.B. MSCI World)" style="width: 100%; box-sizing: border-box;">
+    <ul id="suggestions" style="list-style: none; margin: 0; padding: 0; position: absolute; width: 100%; background: white; border: 1px solid #ccc; display: none;"></ul>
+  </div>
+  <p>Ausgewählt: <span id="selected-instrument">S&P 500 (^GSPC)</span></p>
+
+    <table>
+        <tr>
+            <th>Fear and greed index (Markt): </th>
+            <th id="fear-greed">lädt...</th>
+        </tr>
+
+        <tr>
+            <th>rsi 14: </th>
+            <th id="rsi14">lädt...</th>
+        </tr>
+
+        <tr>
+            <th>Price - 200 Moving average: </th>
+            <th id="price-sma">lädt...</th>
+        </tr>
+    </table>
+
+    <script>
+      let currentSymbol = '^GSPC';
+
+      async function loadData(symbol) {
+        try {
+          const res = await fetch(`/api/data?symbol=${encodeURIComponent(symbol)}`);
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+
+          const fg = data.fearGreed;
+          document.getElementById('fear-greed').textContent =
+            `${fg.score.toFixed(1)} (${fg.rating})`;
+
+          document.getElementById('selected-instrument').textContent =
+            `${data.market.name} (${data.market.symbol})`;
+
+          const rsi = data.market.rsi14;
+          document.getElementById('rsi14').textContent =
+            rsi !== null ? rsi.toFixed(1) : 'n/a';
+
+          const { price, sma200 } = data.market;
+          if (sma200) {
+            // Preis = 100%, Moving Average als Prozentwert davon.
+            // Negativ = Preis unter dem 200-MA gerutscht (potenzielles Kaufsignal).
+            const diffPct = (100 - (sma200 / price * 100)).toFixed(2);
+            document.getElementById('price-sma').textContent =
+              `${diffPct > 0 ? '+' : ''}${diffPct}% (${price.toFixed(2)} / MA ${sma200.toFixed(2)})`;
+          } else {
+            document.getElementById('price-sma').textContent = 'n/a';
+          }
+        } catch (err) {
+          document.getElementById('rsi14').textContent = 'Fehler';
+          document.getElementById('price-sma').textContent = 'Fehler';
+          console.error(err);
+        }
+      }
+
+      const searchInput = document.getElementById('symbol-search');
+      const suggestionsList = document.getElementById('suggestions');
+      let searchTimer = null;
+
+      searchInput.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        const q = searchInput.value.trim();
+        if (q.length < 2) {
+          suggestionsList.style.display = 'none';
+          return;
+        }
+        searchTimer = setTimeout(async () => {
+          try {
+            const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+            const data = await res.json();
+            const results = data.results || [];
+            suggestionsList.innerHTML = '';
+            results.forEach(r => {
+              const li = document.createElement('li');
+              li.textContent = `${r.name} — ${r.symbol} (${r.exchange}, ${r.type})`;
+              li.style.padding = '4px 8px';
+              li.style.cursor = 'pointer';
+              li.addEventListener('click', () => {
+                currentSymbol = r.symbol;
+                searchInput.value = '';
+                suggestionsList.style.display = 'none';
+                loadData(currentSymbol);
+              });
+              li.addEventListener('mouseenter', () => li.style.background = '#eee');
+              li.addEventListener('mouseleave', () => li.style.background = 'white');
+              suggestionsList.appendChild(li);
+            });
+            suggestionsList.style.display = results.length ? 'block' : 'none';
+          } catch (err) {
+            console.error(err);
+          }
+        }, 300);
+      });
+
+      document.addEventListener('click', (e) => {
+        if (e.target !== searchInput) suggestionsList.style.display = 'none';
+      });
+
+      loadData(currentSymbol);
+    </script>
+</body>
+</html>
+
