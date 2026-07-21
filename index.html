@@ -6,33 +6,153 @@
 <title>Aktienanalyse</title>
 </head>
 <body>
-  <h1>Aktienanalyse</h1>
+  <div style="display: flex; align-items: flex-start;">
+    <div style="flex: 1; min-width: 0; padding-right: 16px; box-sizing: border-box;">
+      <h1>Aktienanalyse</h1>
 
-  <div style="position: relative; max-width: 400px;">
-    <input id="symbol-search" type="text" placeholder="Aktie oder ETF suchen (z.B. MSCI World)" style="width: 100%; box-sizing: border-box;">
-    <ul id="suggestions" style="list-style: none; margin: 0; padding: 0; position: absolute; width: 100%; background: white; border: 1px solid #ccc; display: none;"></ul>
+      <div style="position: relative; max-width: 400px;">
+        <input id="symbol-search" type="text" placeholder="Aktie oder ETF suchen (z.B. MSCI World)" style="width: 100%; box-sizing: border-box;">
+        <ul id="suggestions" style="list-style: none; margin: 0; padding: 0; position: absolute; width: 100%; background: white; border: 1px solid #ccc; display: none;"></ul>
+      </div>
+      <p>Ausgewählt: <span id="selected-instrument">iShares Core S&P 500 UCITS ETF USD (Acc) (SXR8.DE)</span>
+        <button id="favorite-star" type="button" title="Zu Favoriten" style="background: none; border: none; cursor: pointer; font-size: 18px; line-height: 1; vertical-align: middle; padding: 0;">☆</button>
+      </p>
+
+      <div style="max-width: 600px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+        <div id="range-buttons">
+          <button type="button" data-range="1d">Tag</button>
+          <button type="button" data-range="5d">Woche</button>
+          <button type="button" data-range="1mo">Monat</button>
+          <button type="button" data-range="1y">Jahr</button>
+          <button type="button" data-range="5y">5 Jahre</button>
+        </div>
+        <span id="range-change"></span>
+      </div>
+      <svg id="chart" viewBox="0 0 600 220" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
+
+        <table>
+            <tr>
+                <th>Fear and greed index (Markt): </th>
+                <th id="fear-greed">lädt...</th>
+            </tr>
+
+            <tr>
+                <th>rsi 14: </th>
+                <th id="rsi14">lädt...</th>
+            </tr>
+
+            <tr>
+                <th>Price - 200 Moving average: </th>
+                <th id="price-sma">lädt...</th>
+            </tr>
+        </table>
+    </div>
+
+    <aside style="width: 20vw; min-width: 220px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto;">
+      <h2 style="font-size: 14px; margin-top: 0;">Favoriten</h2>
+      <ul id="favorites-list" style="list-style: none; padding: 0; margin: 0;"></ul>
+    </aside>
   </div>
-  <p>Ausgewählt: <span id="selected-instrument">S&P 500 (^GSPC)</span></p>
-
-    <table>
-        <tr>
-            <th>Fear and greed index (Markt): </th>
-            <th id="fear-greed">lädt...</th>
-        </tr>
-
-        <tr>
-            <th>rsi 14: </th>
-            <th id="rsi14">lädt...</th>
-        </tr>
-
-        <tr>
-            <th>Price - 200 Moving average: </th>
-            <th id="price-sma">lädt...</th>
-        </tr>
-    </table>
 
     <script>
-      let currentSymbol = '^GSPC';
+      let currentSymbol = 'SXR8.DE';
+      let currentRange = '1y';
+
+      function formatTick(date, rangeKey) {
+        switch (rangeKey) {
+          case '1d':
+            return date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+          case '5d':
+            return date.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit' });
+          case '1mo':
+            return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+          case '5y':
+            return date.toLocaleDateString('de-DE', { year: 'numeric' });
+          case '1y':
+          default:
+            return date.toLocaleDateString('de-DE', { month: 'short' });
+        }
+      }
+
+      function renderChart(closes, timestamps, rangeKey) {
+        const svg = document.getElementById('chart');
+        svg.innerHTML = '';
+        if (!closes || closes.length < 2) return;
+
+        const width = 600, height = 220;
+        const padLeft = 30, padRight = 10, padTop = 10, padBottom = 30;
+        const plotWidth = width - padLeft - padRight;
+        const plotHeight = height - padTop - padBottom;
+
+        const min = Math.min(...closes);
+        const max = Math.max(...closes);
+        const range = (max - min) || 1;
+
+        const xAt = i => padLeft + (i / (closes.length - 1)) * plotWidth;
+        const yAt = v => padTop + plotHeight - ((v - min) / range) * plotHeight;
+
+        const points = closes.map((v, i) => `${xAt(i)},${yAt(v)}`).join(' ');
+
+        const ns = 'http://www.w3.org/2000/svg';
+
+        const yAxis = document.createElementNS(ns, 'line');
+        yAxis.setAttribute('x1', padLeft);
+        yAxis.setAttribute('y1', padTop);
+        yAxis.setAttribute('x2', padLeft);
+        yAxis.setAttribute('y2', padTop + plotHeight);
+        yAxis.setAttribute('stroke', 'black');
+        svg.appendChild(yAxis);
+
+        const xAxis = document.createElementNS(ns, 'line');
+        xAxis.setAttribute('x1', padLeft);
+        xAxis.setAttribute('y1', padTop + plotHeight);
+        xAxis.setAttribute('x2', padLeft + plotWidth);
+        xAxis.setAttribute('y2', padTop + plotHeight);
+        xAxis.setAttribute('stroke', 'black');
+        svg.appendChild(xAxis);
+
+        const polyline = document.createElementNS(ns, 'polyline');
+        polyline.setAttribute('points', points);
+        polyline.setAttribute('fill', 'none');
+        polyline.setAttribute('stroke', 'steelblue');
+        polyline.setAttribute('stroke-width', '2');
+        svg.appendChild(polyline);
+
+        if (timestamps && timestamps.length === closes.length) {
+          const tickCount = Math.min(6, timestamps.length);
+          for (let t = 0; t < tickCount; t++) {
+            const i = Math.round((t / (tickCount - 1)) * (timestamps.length - 1));
+            const label = document.createElementNS(ns, 'text');
+            label.setAttribute('x', xAt(i));
+            label.setAttribute('y', padTop + plotHeight + 16);
+            label.setAttribute('font-size', '10');
+            label.setAttribute('text-anchor', 'middle');
+            label.textContent = formatTick(new Date(timestamps[i] * 1000), rangeKey);
+            svg.appendChild(label);
+          }
+        }
+      }
+
+      async function loadChart(symbol, rangeKey) {
+        try {
+          const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(rangeKey)}`);
+          const data = await res.json();
+          if (data.error) throw new Error(data.error);
+          renderChart(data.closes, data.timestamps, rangeKey);
+
+          const closes = data.closes;
+          const changeEl = document.getElementById('range-change');
+          if (closes && closes.length >= 2) {
+            const pct = ((closes[closes.length - 1] - closes[0]) / closes[0] * 100).toFixed(2);
+            changeEl.textContent = `${pct > 0 ? '+' : ''}${pct}%`;
+          } else {
+            changeEl.textContent = 'n/a';
+          }
+        } catch (err) {
+          document.getElementById('range-change').textContent = 'Fehler';
+          console.error(err);
+        }
+      }
 
       async function loadData(symbol) {
         try {
@@ -91,10 +211,9 @@
               li.style.padding = '4px 8px';
               li.style.cursor = 'pointer';
               li.addEventListener('click', () => {
-                currentSymbol = r.symbol;
                 searchInput.value = '';
                 suggestionsList.style.display = 'none';
-                loadData(currentSymbol);
+                selectSymbol(r.symbol);
               });
               li.addEventListener('mouseenter', () => li.style.background = '#eee');
               li.addEventListener('mouseleave', () => li.style.background = 'white');
@@ -111,7 +230,103 @@
         if (e.target !== searchInput) suggestionsList.style.display = 'none';
       });
 
+      const rangeButtons = document.querySelectorAll('#range-buttons button');
+      rangeButtons.forEach(btn => {
+        if (btn.dataset.range === currentRange) btn.style.fontWeight = 'bold';
+        btn.addEventListener('click', () => {
+          currentRange = btn.dataset.range;
+          rangeButtons.forEach(b => b.style.fontWeight = 'normal');
+          btn.style.fontWeight = 'bold';
+          loadChart(currentSymbol, currentRange);
+        });
+      });
+
+      const FAVORITES_KEY = 'aktienanalyse-favorites';
+
+      function loadFavorites() {
+        try {
+          return JSON.parse(localStorage.getItem(FAVORITES_KEY)) || [];
+        } catch {
+          return [];
+        }
+      }
+
+      function saveFavorites(favs) {
+        localStorage.setItem(FAVORITES_KEY, JSON.stringify(favs));
+      }
+
+      function selectSymbol(symbol) {
+        currentSymbol = symbol;
+        loadData(currentSymbol);
+        loadChart(currentSymbol, currentRange);
+        updateFavoriteStar();
+      }
+
+      function updateFavoriteStar() {
+        const isFavorite = loadFavorites().some(f => f.symbol === currentSymbol);
+        document.getElementById('favorite-star').textContent = isFavorite ? '★' : '☆';
+      }
+
+      function renderFavorites() {
+        const list = document.getElementById('favorites-list');
+        list.innerHTML = '';
+        loadFavorites().forEach(fav => {
+          const li = document.createElement('li');
+          li.style.marginBottom = '6px';
+          li.style.display = 'flex';
+          li.style.justifyContent = 'space-between';
+          li.style.alignItems = 'center';
+
+          const link = document.createElement('a');
+          link.href = '#';
+          link.textContent = fav.name || fav.symbol;
+          link.title = fav.symbol;
+          link.style.cursor = 'pointer';
+          link.style.fontSize = '13px';
+          link.style.overflow = 'hidden';
+          link.style.textOverflow = 'ellipsis';
+          link.style.whiteSpace = 'nowrap';
+          link.addEventListener('click', (e) => {
+            e.preventDefault();
+            selectSymbol(fav.symbol);
+          });
+
+          const removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.textContent = '×';
+          removeBtn.title = 'Entfernen';
+          removeBtn.style.marginLeft = '4px';
+          removeBtn.addEventListener('click', () => {
+            saveFavorites(loadFavorites().filter(f => f.symbol !== fav.symbol));
+            renderFavorites();
+            updateFavoriteStar();
+          });
+
+          li.appendChild(link);
+          li.appendChild(removeBtn);
+          list.appendChild(li);
+        });
+      }
+
+      document.getElementById('favorite-star').addEventListener('click', () => {
+        const favs = loadFavorites();
+        const isFavorite = favs.some(f => f.symbol === currentSymbol);
+        if (isFavorite) {
+          saveFavorites(favs.filter(f => f.symbol !== currentSymbol));
+        } else {
+          const name = document.getElementById('selected-instrument').textContent
+            .replace(` (${currentSymbol})`, '');
+          favs.push({ symbol: currentSymbol, name });
+          saveFavorites(favs);
+        }
+        renderFavorites();
+        updateFavoriteStar();
+      });
+
+      renderFavorites();
+      updateFavoriteStar();
       loadData(currentSymbol);
+      loadChart(currentSymbol, currentRange);
     </script>
 </body>
 </html>

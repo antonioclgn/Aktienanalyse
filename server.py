@@ -2,6 +2,8 @@
 Fear & Greed Index, RSI14 und den 200-Tage-Durchschnitt des S&P500 bereit.
 """
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -9,11 +11,35 @@ from urllib.request import Request, urlopen
 
 BASE_DIR = Path(__file__).resolve().parent
 PORT = 8000
+CACHE_TTL_SECONDS = 30
 
 CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=1y&interval=1d"
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range}&interval={interval}"
 YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=8&newsCount=0"
-DEFAULT_SYMBOL = "^GSPC"
+DEFAULT_SYMBOL = "SXR8.DE"  # iShares Core S&P 500 UCITS ETF USD (Acc)
+
+# Zeitraum (fürs Frontend) -> Yahoo-Interval
+CHART_RANGES = {
+    "1d": "5m",
+    "5d": "30m",
+    "1mo": "1d",
+    "1y": "1d",
+    "5y": "1wk",
+}
+DEFAULT_CHART_RANGE = "1y"
+
+_cache = {}
+
+
+def cached(key, ttl, fetch_fn):
+    now = time.monotonic()
+    entry = _cache.get(key)
+    if entry and now - entry[0] < ttl:
+        return entry[1]
+    value = fetch_fn()
+    _cache[key] = (now, value)
+    return value
+
 
 BROWSER_HEADERS = {
     "User-Agent": (
@@ -57,7 +83,7 @@ def compute_rsi14(closes):
 
 
 def get_market_data(symbol):
-    url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""))
+    url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""), range="1y", interval="1d")
     data = fetch_json(url)
     result = data["chart"]["result"][0]
     meta = result["meta"]
@@ -74,6 +100,24 @@ def get_market_data(symbol):
         "price": current_price,
         "sma200": sma200,
         "rsi14": rsi14,
+    }
+
+
+def get_history(symbol, range_key):
+    if range_key not in CHART_RANGES:
+        range_key = DEFAULT_CHART_RANGE
+    interval = CHART_RANGES[range_key]
+
+    url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""), range=range_key, interval=interval)
+    data = fetch_json(url)
+    result = data["chart"]["result"][0]
+    timestamps = result.get("timestamp", [])
+    closes = result["indicators"]["quote"][0]["close"]
+
+    points = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
+    return {
+        "timestamps": [p[0] for p in points],
+        "closes": [p[1] for p in points],
     }
 
 
@@ -120,8 +164,29 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/data":
             symbol = query.get("symbol", [DEFAULT_SYMBOL])[0].strip() or DEFAULT_SYMBOL
             try:
-                payload = {"market": get_market_data(symbol), "fearGreed": get_fear_greed()}
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    market_future = pool.submit(
+                        cached, ("market", symbol), CACHE_TTL_SECONDS, lambda: get_market_data(symbol)
+                    )
+                    fear_greed_future = pool.submit(
+                        cached, "fear_greed", CACHE_TTL_SECONDS, get_fear_greed
+                    )
+                    payload = {"market": market_future.result(), "fearGreed": fear_greed_future.result()}
                 self._send_json(payload)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=502)
+            return
+
+        if parsed.path == "/api/history":
+            symbol = query.get("symbol", [DEFAULT_SYMBOL])[0].strip() or DEFAULT_SYMBOL
+            range_key = query.get("range", [DEFAULT_CHART_RANGE])[0].strip()
+            if range_key not in CHART_RANGES:
+                range_key = DEFAULT_CHART_RANGE
+            try:
+                result = cached(
+                    ("history", symbol, range_key), CACHE_TTL_SECONDS, lambda: get_history(symbol, range_key)
+                )
+                self._send_json(result)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=502)
             return
@@ -132,7 +197,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"results": []})
                 return
             try:
-                self._send_json({"results": search_symbols(search_term)})
+                results = cached(
+                    ("search", search_term.lower()), CACHE_TTL_SECONDS, lambda: search_symbols(search_term)
+                )
+                self._send_json({"results": results})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=502)
             return
