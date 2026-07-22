@@ -55,9 +55,40 @@
       <svg id="price-ma-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
     </div>
 
-    <aside style="width: 28vw; min-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto;">
+    <aside style="width: 28vw; min-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column;">
       <h2 style="font-size: 14px; margin-top: 0;">Favoriten</h2>
       <ul id="favorites-list" style="list-style: none; padding: 0; margin: 0;"></ul>
+      <section style="margin-top: auto; padding-top: 10px; border-top: 1px solid #ccc; min-height: 25vh; font-size: 12px;">
+        <h2 style="font-size: 14px; margin: 0 0 8px;">Balken-Einstellungen</h2>
+        <div style="color: #666; margin-bottom: 8px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen.</div>
+        <label style="display: block; margin-bottom: 5px;">
+          <input id="toggle-highlight-feargreed" type="checkbox">
+          Fear &amp; Greed berücksichtigen
+        </label>
+        <div style="color: #666; margin: 0 0 3px 22px; font-size: 11px;">Standard: kaufen ≤ 25, verkaufen ≥ 75</div>
+        <div style="display: flex; gap: 4px; align-items: center; margin: 0 0 7px 22px;">
+          <label>kaufen ≤ <input id="highlight-feargreed-buy" type="number" min="0" max="100" step="0.1" style="width: 52px;"></label>
+          <label>verkaufen ≥ <input id="highlight-feargreed-sell" type="number" min="0" max="100" step="0.1" style="width: 52px;"></label>
+        </div>
+        <label style="display: block; margin-bottom: 3px;">
+          <input id="toggle-highlight-rsi" type="checkbox">
+          RSI berücksichtigen
+        </label>
+        <div style="color: #666; margin: 0 0 3px 22px; font-size: 11px;">Standard: kaufen ≤ 30, verkaufen ≥ 70</div>
+        <div style="display: flex; gap: 4px; align-items: center; margin: 0 0 7px 22px;">
+          <label>kaufen ≤ <input id="highlight-rsi-buy" type="number" step="0.1" style="width: 52px;"></label>
+          <label>verkaufen ≥ <input id="highlight-rsi-sell" type="number" step="0.1" style="width: 52px;"></label>
+        </div>
+        <label style="display: block; margin-bottom: 3px;">
+          <input id="toggle-highlight-pma" type="checkbox">
+          Moving-Average-Abweichung berücksichtigen
+        </label>
+        <div style="color: #666; margin: 0 0 3px 22px; font-size: 11px;">Standard: 1× Standardabweichung</div>
+        <label style="display: block; margin: 0 0 7px 22px;">
+          Bandabstand: <input id="highlight-pma-multiplier" type="number" min="0" step="0.1" style="width: 52px;"> × Standardabweichung
+        </label>
+        <button id="reset-highlight-settings" type="button" style="font-size: 11px;">Auf Standard zurücksetzen</button>
+      </section>
     </aside>
   </div>
 
@@ -70,6 +101,93 @@
       // (der aus /api/data getrennt geladen wird) sich auf dieselbe X-Achse legen kann.
       let lastChartTimestamps = null;
       let lastHighlightRanges = [];
+      let lastChartData = null;
+      const HIGHLIGHT_SETTINGS_KEY = 'aktienanalyse-highlight-settings';
+      const DEFAULT_HIGHLIGHT_SETTINGS = {
+        useFearGreed: true,
+        useRsi: true,
+        usePma: true,
+        fearGreedBuy: 25,
+        fearGreedSell: 75,
+        rsiBuy: 30,
+        rsiSell: 70,
+        pmaStdMultiplier: 1,
+      };
+      let highlightSettings = { ...DEFAULT_HIGHLIGHT_SETTINGS };
+
+      function loadHighlightSettings(symbol) {
+        let allSettings = {};
+        try {
+          allSettings = JSON.parse(localStorage.getItem(HIGHLIGHT_SETTINGS_KEY)) || {};
+        } catch {
+          allSettings = {};
+        }
+        highlightSettings = { ...DEFAULT_HIGHLIGHT_SETTINGS, ...(allSettings[symbol] || {}) };
+
+        document.getElementById('toggle-highlight-feargreed').checked = highlightSettings.useFearGreed;
+        document.getElementById('toggle-highlight-rsi').checked = highlightSettings.useRsi;
+        document.getElementById('toggle-highlight-pma').checked = highlightSettings.usePma;
+        document.getElementById('highlight-feargreed-buy').value = highlightSettings.fearGreedBuy;
+        document.getElementById('highlight-feargreed-sell').value = highlightSettings.fearGreedSell;
+        document.getElementById('highlight-rsi-buy').value = highlightSettings.rsiBuy;
+        document.getElementById('highlight-rsi-sell').value = highlightSettings.rsiSell;
+        document.getElementById('highlight-pma-multiplier').value = highlightSettings.pmaStdMultiplier;
+      }
+
+      function saveHighlightSettings() {
+        let allSettings = {};
+        try {
+          allSettings = JSON.parse(localStorage.getItem(HIGHLIGHT_SETTINGS_KEY)) || {};
+        } catch {
+          allSettings = {};
+        }
+        allSettings[currentSymbol] = highlightSettings;
+        localStorage.setItem(HIGHLIGHT_SETTINGS_KEY, JSON.stringify(allSettings));
+      }
+
+      function resetHighlightSettings() {
+        highlightSettings = { ...DEFAULT_HIGHLIGHT_SETTINGS };
+        saveHighlightSettings();
+        loadHighlightSettings(currentSymbol);
+        rerenderHighlightCharts();
+      }
+
+      function updateHighlightSetting(name, value) {
+        highlightSettings[name] = value;
+        saveHighlightSettings();
+        if (lastChartData) {
+          rerenderHighlightCharts();
+        } else {
+          loadChart(currentSymbol, currentRange);
+        }
+      }
+
+      function bindNumberSetting(elementId, settingName) {
+        const input = document.getElementById(elementId);
+        let lastValue = input.value;
+        let pollTimer = null;
+
+        const applyValue = () => {
+          if (input.value === lastValue) return;
+          lastValue = input.value;
+          const value = Number(input.value);
+          if (Number.isFinite(value)) updateHighlightSetting(settingName, value);
+        };
+        const stopPolling = () => {
+          if (pollTimer != null) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+          }
+        };
+
+        input.addEventListener('input', applyValue);
+        input.addEventListener('pointerdown', () => {
+          stopPolling();
+          pollTimer = setInterval(applyValue, 50);
+        });
+        input.addEventListener('blur', stopPolling);
+        window.addEventListener('pointerup', stopPolling);
+      }
 
       function formatTick(date, rangeKey) {
         switch (rangeKey) {
@@ -102,12 +220,11 @@
         return Math.max(minPadding, widest + 8);
       }
 
-      // Volle Deckkraft (alle 3 Indikatoren) vs. blasser (nur 2 von 3).
+      // Balken werden für alle aktivierten Indikatoren gezeichnet, wenn sie
+      // gleichzeitig in dieselbe Richtung ausschlagen.
       const HIGHLIGHT_STYLES = {
-        green: { color: '#22c55e', opacity: 0.18 },
-        red: { color: '#ef4444', opacity: 0.18 },
-        'green-weak': { color: '#22c55e', opacity: 0.07 },
-        'red-weak': { color: '#ef4444', opacity: 0.07 },
+        green: { color: '#16a34a', opacity: 0.28, minWidth: 2.5 },
+        red: { color: '#dc2626', opacity: 0.28, minWidth: 2.5 },
       };
 
       function renderHighlightRects(svg, ns, rects) {
@@ -116,7 +233,7 @@
           const rect = document.createElementNS(ns, 'rect');
           rect.setAttribute('x', Math.min(r.x1, r.x2));
           rect.setAttribute('y', r.y);
-          rect.setAttribute('width', Math.max(Math.abs(r.x2 - r.x1), 1));
+          rect.setAttribute('width', Math.max(Math.abs(r.x2 - r.x1), style.minWidth || 1));
           rect.setAttribute('height', r.height);
           rect.setAttribute('fill', style.color);
           rect.setAttribute('opacity', String(style.opacity));
@@ -241,22 +358,35 @@
       }
 
       // Findet zusammenhängende Zeiträume, in denen gleichzeitig gilt:
-      // grün = Fear&Greed <= 25 (Extreme Fear), RSI < 30, Deviation < unteres Band (Kaufsignal)
-      // rot  = Fear&Greed >= 75 (Extreme Greed), RSI > 70, Deviation > oberes Band (Verkaufssignal)
+      // grün = aktivierte Indikatoren zeigen ein Kaufsignal
+      // rot  = aktivierte Indikatoren zeigen ein Verkaufssignal
       function computeHighlightRanges(timestamps, rsi, pma, pmaUpper, pmaLower) {
         const types = timestamps.map((t, i) => {
           const fg = fearGreedScoreAt(t);
-          if (fg == null || rsi[i] == null || pma[i] == null || pmaUpper[i] == null || pmaLower[i] == null) {
+          if ((highlightSettings.useFearGreed && fg == null)
+            || (highlightSettings.useRsi && rsi[i] == null)
+            || (highlightSettings.usePma
+              && (pma[i] == null || pmaUpper[i] == null || pmaLower[i] == null))) {
             return null;
           }
-          // Zählen, wie viele der 3 Bedingungen je Richtung erfüllt sind:
-          // 3 = starkes Signal (voll), 2 = schwaches Signal (blass), <2 = keins.
-          const buy = (fg <= 25) + (rsi[i] < 30) + (pma[i] < pmaLower[i]);
-          const sell = (fg >= 75) + (rsi[i] > 70) + (pma[i] > pmaUpper[i]);
-          if (buy === 3) return 'green';
-          if (sell === 3) return 'red';
-          if (buy === 2) return 'green-weak';
-          if (sell === 2) return 'red-weak';
+          const buyConditions = [];
+          const sellConditions = [];
+          if (highlightSettings.useFearGreed) {
+            buyConditions.push(fg <= highlightSettings.fearGreedBuy);
+            sellConditions.push(fg >= highlightSettings.fearGreedSell);
+          }
+          if (highlightSettings.useRsi) {
+            buyConditions.push(rsi[i] <= highlightSettings.rsiBuy);
+            sellConditions.push(rsi[i] >= highlightSettings.rsiSell);
+          }
+          if (highlightSettings.usePma) {
+            buyConditions.push(pma[i] < pmaLower[i]);
+            sellConditions.push(pma[i] > pmaUpper[i]);
+          }
+
+          if (!buyConditions.length) return null;
+          if (buyConditions.every(Boolean)) return 'green';
+          if (sellConditions.every(Boolean)) return 'red';
           return null;
         });
 
@@ -295,7 +425,9 @@
           timestamps,
           rangeKey,
           {
-            fixedMin: 0, fixedMax: 100, referenceLines: [25, 75], color: 'goldenrod',
+            fixedMin: 0, fixedMax: 100,
+            referenceLines: [highlightSettings.fearGreedBuy, highlightSettings.fearGreedSell],
+            color: 'goldenrod',
             formatValue: v => v.toFixed(0), padLeft: sharedChartPadLeft, highlightRanges,
           }
         );
@@ -313,6 +445,43 @@
           result[i] = sum / (i + 1);
         }
         return result;
+      }
+
+      function rerenderHighlightCharts() {
+        const data = lastChartData;
+        if (!data) return;
+
+        const pmaTrend = computeTrendLine(data.priceVsMaPct);
+        const pmaStd = data.priceVsMaPctStd;
+        const pmaBandDistance = pmaStd != null ? pmaStd * highlightSettings.pmaStdMultiplier : null;
+        const pmaUpper = pmaBandDistance != null
+          ? pmaTrend.map(v => (v != null ? v + pmaBandDistance : null))
+          : null;
+        const pmaLower = pmaBandDistance != null
+          ? pmaTrend.map(v => (v != null ? v - pmaBandDistance : null))
+          : null;
+        const pmaOverlays = [{ series: pmaTrend, color: '#ccc' }];
+        if (pmaUpper) pmaOverlays.push({ series: pmaUpper, color: '#ccc' });
+        if (pmaLower) pmaOverlays.push({ series: pmaLower, color: '#ccc' });
+
+        const highlightRanges = ((!highlightSettings.usePma) || (pmaUpper && pmaLower))
+          ? computeHighlightRanges(data.timestamps, data.rsi, data.priceVsMaPct, pmaUpper, pmaLower)
+          : [];
+
+        renderChart(data.closes, data.timestamps, currentRange, data.movingAverage, sharedChartPadLeft, highlightRanges);
+        renderIndicatorChart('rsi-chart', data.rsi, data.timestamps, currentRange, {
+          fixedMin: 0, fixedMax: 100,
+          referenceLines: [highlightSettings.rsiBuy, highlightSettings.rsiSell],
+          color: 'purple', formatValue: v => v.toFixed(0),
+          padLeft: sharedChartPadLeft, highlightRanges,
+        });
+        renderIndicatorChart('price-ma-chart', data.priceVsMaPct, data.timestamps, currentRange, {
+          color: 'teal', overlays: pmaOverlays, formatValue: v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`,
+          padLeft: sharedChartPadLeft, highlightRanges,
+        });
+        lastChartTimestamps = data.timestamps;
+        lastHighlightRanges = highlightRanges;
+        renderFearGreedChart(currentRange, highlightRanges, data.timestamps);
       }
 
       function lastValue(series) {
@@ -479,6 +648,7 @@
           const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(rangeKey)}`);
           const data = await res.json();
           if (data.error) throw new Error(data.error);
+          lastChartData = data;
 
           // Gemeinsamer linker Rand für alle Charts auf der Seite, damit sie trotz
           // unterschiedlich breiter Y-Achsen-Zahlen (Kurs, RSI, %) an derselben Stelle beginnen.
@@ -499,21 +669,24 @@
           const pmaStd = data.priceVsMaPctStd;
           // Ober-/Unterband folgen der Trendlinie im konstanten Abstand von 1 Standardabweichung
           // (statt starrer horizontaler Linien) — wie bei Bollinger Bändern um eine Moving Average.
-          const pmaUpper = pmaStd != null ? pmaTrend.map(v => (v != null ? v + pmaStd : null)) : null;
-          const pmaLower = pmaStd != null ? pmaTrend.map(v => (v != null ? v - pmaStd : null)) : null;
+          const pmaBandDistance = pmaStd != null ? pmaStd * highlightSettings.pmaStdMultiplier : null;
+          const pmaUpper = pmaBandDistance != null ? pmaTrend.map(v => (v != null ? v + pmaBandDistance : null)) : null;
+          const pmaLower = pmaBandDistance != null ? pmaTrend.map(v => (v != null ? v - pmaBandDistance : null)) : null;
           const pmaOverlays = [{ series: pmaTrend, color: '#ccc' }];
           if (pmaUpper) pmaOverlays.push({ series: pmaUpper, color: '#ccc' });
           if (pmaLower) pmaOverlays.push({ series: pmaLower, color: '#ccc' });
 
           // Kauf-/Verkaufssignal-Zeiträume: Fear&Greed extrem + RSI extrem + Deviation
           // außerhalb der Std.-Abw.-Bänder, gleichzeitig -> grün/rot über alle Charts markieren.
-          const highlightRanges = (pmaUpper && pmaLower)
+          const highlightRanges = ((!highlightSettings.usePma) || (pmaUpper && pmaLower))
             ? computeHighlightRanges(data.timestamps, data.rsi, data.priceVsMaPct, pmaUpper, pmaLower)
             : [];
 
           renderChart(data.closes, data.timestamps, rangeKey, data.movingAverage, sharedChartPadLeft, highlightRanges);
           renderIndicatorChart('rsi-chart', data.rsi, data.timestamps, rangeKey, {
-            fixedMin: 0, fixedMax: 100, referenceLines: [30, 70], color: 'purple',
+            fixedMin: 0, fixedMax: 100,
+            referenceLines: [highlightSettings.rsiBuy, highlightSettings.rsiSell],
+            color: 'purple',
             formatValue: v => v.toFixed(0),
             padLeft: sharedChartPadLeft,
             highlightRanges,
@@ -637,6 +810,28 @@
         });
       });
 
+      document.getElementById('toggle-highlight-feargreed').addEventListener('change', (event) => {
+        updateHighlightSetting('useFearGreed', event.target.checked);
+      });
+
+      document.getElementById('toggle-highlight-rsi').addEventListener('change', (event) => {
+        updateHighlightSetting('useRsi', event.target.checked);
+      });
+
+      document.getElementById('toggle-highlight-pma').addEventListener('change', (event) => {
+        updateHighlightSetting('usePma', event.target.checked);
+      });
+
+      [
+        ['highlight-feargreed-buy', 'fearGreedBuy'],
+        ['highlight-feargreed-sell', 'fearGreedSell'],
+        ['highlight-rsi-buy', 'rsiBuy'],
+        ['highlight-rsi-sell', 'rsiSell'],
+        ['highlight-pma-multiplier', 'pmaStdMultiplier'],
+      ].forEach(([elementId, settingName]) => bindNumberSetting(elementId, settingName));
+
+      document.getElementById('reset-highlight-settings').addEventListener('click', resetHighlightSettings);
+
       const FAVORITES_KEY = 'aktienanalyse-favorites';
 
       function loadFavorites() {
@@ -654,6 +849,7 @@
       function selectSymbol(symbol) {
         currentSymbol = symbol;
         localStorage.setItem(LAST_SYMBOL_KEY, symbol);
+        loadHighlightSettings(currentSymbol);
         loadData(currentSymbol);
         loadChart(currentSymbol, currentRange);
         updateFavoriteStar();
@@ -758,9 +954,9 @@
 
       renderFavorites();
       updateFavoriteStar();
+      loadHighlightSettings(currentSymbol);
       loadData(currentSymbol);
       loadChart(currentSymbol, currentRange);
     </script>
 </body>
 </html>
-
