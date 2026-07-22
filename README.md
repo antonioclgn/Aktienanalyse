@@ -32,3 +32,4 @@ Im Terminal, in dem der Server läuft, `Strg + C` drücken.
 
 - `index.html` — Oberfläche
 - `server.py` — lokaler Server, holt die Daten und berechnet RSI14 / 200-Tage-Durchschnitt
+- `feargreed_history_2011_2020.csv` — mitgelieferte Fear-&-Greed-Historie 2011–13.07.2020. CNNs eigene API liefert selbst nichts vor dem 14.07.2020 (getestet, HTTP 500 bei früherem Startdatum); für die Zeit davor wird diese Datei genutzt (Quelle: [whit3rabbit/fear-greed-data](https://github.com/whit3rabbit/fear-greed-data), Stand beim Download geprüft gegen CNNs Live-Werte). Ab 14.07.2020 kommen alle Werte live von CNN.

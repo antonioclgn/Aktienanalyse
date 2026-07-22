@@ -4,11 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Aktienanalyse</title>
+<style>
+  body { margin: 0; }
+</style>
 </head>
 <body>
   <div style="display: flex; align-items: flex-start;">
-    <div style="flex: 1; min-width: 0; padding-right: 16px; box-sizing: border-box;">
-      <h1>Aktienanalyse</h1>
+    <div style="flex: 1; min-width: 0; padding: 8px 16px 8px 8px; box-sizing: border-box;">
 
       <div style="position: relative; max-width: 400px;">
         <input id="symbol-search" type="text" placeholder="Aktie oder ETF suchen (z.B. MSCI World)" style="width: 100%; box-sizing: border-box;">
@@ -25,30 +27,32 @@
           <button type="button" data-range="1mo">Monat</button>
           <button type="button" data-range="1y">Jahr</button>
           <button type="button" data-range="5y">5 Jahre</button>
+          <button type="button" data-range="10y">10 Jahre</button>
         </div>
         <span id="range-change"></span>
       </div>
       <svg id="chart" viewBox="0 0 600 220" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
 
-        <table>
-            <tr>
-                <th>Fear and greed index (Markt): </th>
-                <th id="fear-greed">lädt...</th>
-            </tr>
+      <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
+        <span>Fear &amp; Greed Index (Markt, ca. 1 Jahr)</span>
+        <span id="feargreed-current"></span>
+      </div>
+      <svg id="feargreed-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
 
-            <tr>
-                <th>rsi 14: </th>
-                <th id="rsi14">lädt...</th>
-            </tr>
+      <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
+        <span>RSI 14</span>
+        <span id="rsi-chart-current"></span>
+      </div>
+      <svg id="rsi-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
 
-            <tr>
-                <th>Price - 200 Moving average: </th>
-                <th id="price-sma">lädt...</th>
-            </tr>
-        </table>
+      <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
+        <span>Price vs. 200-Tage-Durchschnitt (%)</span>
+        <span id="price-ma-chart-current"></span>
+      </div>
+      <svg id="price-ma-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
     </div>
 
-    <aside style="width: 20vw; min-width: 220px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto;">
+    <aside style="width: 28vw; min-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto;">
       <h2 style="font-size: 14px; margin-top: 0;">Favoriten</h2>
       <ul id="favorites-list" style="list-style: none; padding: 0; margin: 0;"></ul>
     </aside>
@@ -67,6 +71,7 @@
           case '1mo':
             return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
           case '5y':
+          case '10y':
             return date.toLocaleDateString('de-DE', { year: 'numeric' });
           case '1y':
           default:
@@ -74,7 +79,7 @@
         }
       }
 
-      function renderChart(closes, timestamps, rangeKey) {
+      function renderChart(closes, timestamps, rangeKey, movingAverage) {
         const svg = document.getElementById('chart');
         svg.innerHTML = '';
         if (!closes || closes.length < 2) return;
@@ -118,6 +123,21 @@
         polyline.setAttribute('stroke-width', '2');
         svg.appendChild(polyline);
 
+        if (movingAverage) {
+          const maPoints = closes
+            .map((_, i) => (movingAverage[i] != null ? `${xAt(i)},${yAt(movingAverage[i])}` : null))
+            .filter(p => p !== null)
+            .join(' ');
+          if (maPoints) {
+            const maLine = document.createElementNS(ns, 'polyline');
+            maLine.setAttribute('points', maPoints);
+            maLine.setAttribute('fill', 'none');
+            maLine.setAttribute('stroke', 'orange');
+            maLine.setAttribute('stroke-width', '2');
+            svg.appendChild(maLine);
+          }
+        }
+
         if (timestamps && timestamps.length === closes.length) {
           const tickCount = Math.min(6, timestamps.length);
           for (let t = 0; t < tickCount; t++) {
@@ -133,12 +153,206 @@
         }
       }
 
+      let fearGreedHistory = [];
+
+      // Dieselben Fenstergrößen wie beim Preis-Chart, damit die Zeitachsen
+      // aller Charts übereinander ausgerichtet sind — auch wenn CNN für 5/10 Jahre
+      // gar nicht so weit zurückreicht (dann bleibt der Anfang leer).
+      const RANGE_DAYS = {
+        '1d': 1,
+        '5d': 5,
+        '1mo': 30,
+        '1y': 365,
+        '5y': 5 * 365,
+        '10y': 10 * 365,
+      };
+
+      function renderFearGreedChart(rangeKey) {
+        if (!fearGreedHistory.length) return;
+        const windowDays = RANGE_DAYS[rangeKey] || 365;
+        const xMax = fearGreedHistory[fearGreedHistory.length - 1].t;
+        const xMin = xMax - windowDays * 86400;
+        const slice = fearGreedHistory.filter(p => p.t >= xMin);
+
+        renderIndicatorChart(
+          'feargreed-chart',
+          slice.map(p => p.score),
+          slice.map(p => p.t),
+          rangeKey,
+          { fixedMin: 0, fixedMax: 100, referenceLines: [25, 75], color: 'goldenrod', xMin, xMax }
+        );
+      }
+
+      // Kumulierter (laufender) Durchschnitt: result[i] = Durchschnitt von series[0..i].
+      // Dadurch bewegt sich die Linie (statt starr zu sein) und landet am rechten
+      // Rand exakt beim Gesamtdurchschnitt des Zeitraums (= derselbe Wert wie "Ø" im Text).
+      function computeTrendLine(series) {
+        if (!series) return null;
+        const result = new Array(series.length).fill(null);
+        let sum = 0;
+        for (let i = 0; i < series.length; i++) {
+          sum += series[i];
+          result[i] = sum / (i + 1);
+        }
+        return result;
+      }
+
+      function lastValue(series) {
+        if (!series) return null;
+        for (let i = series.length - 1; i >= 0; i--) {
+          if (series[i] != null) return series[i];
+        }
+        return null;
+      }
+
+      function renderIndicatorChart(svgId, series, timestamps, rangeKey, options = {}) {
+        const svg = document.getElementById(svgId);
+        svg.innerHTML = '';
+        if (!series || series.length < 2) return;
+
+        const values = series.filter(v => v != null);
+        if (values.length < 2) return;
+
+        const width = 600, height = 90;
+        const padLeft = 30, padRight = 10, padTop = 6, padBottom = 18;
+        const plotWidth = width - padLeft - padRight;
+        const plotHeight = height - padTop - padBottom;
+
+        const min = options.fixedMin != null ? options.fixedMin : Math.min(...values);
+        const max = options.fixedMax != null ? options.fixedMax : Math.max(...values);
+        const range = (max - min) || 1;
+
+        // Standard: Punkte gleichmäßig nach Index verteilt (keine Lücken am Wochenende).
+        // Nur wenn xMin/xMax explizit übergeben werden (z.B. Fear&Greed-Chart, der
+        // mit dem Preis-Chart zeitlich ausgerichtet sein soll), wird nach echter Zeit positioniert.
+        const useTimeScale = options.xMin != null && options.xMax != null;
+        const xRange = useTimeScale ? ((options.xMax - options.xMin) || 1) : null;
+
+        const xAt = i => useTimeScale
+          ? padLeft + ((timestamps[i] - options.xMin) / xRange) * plotWidth
+          : padLeft + (i / (series.length - 1)) * plotWidth;
+        const yAt = v => padTop + plotHeight - ((v - min) / range) * plotHeight;
+
+        const ns = 'http://www.w3.org/2000/svg';
+
+        const yAxis = document.createElementNS(ns, 'line');
+        yAxis.setAttribute('x1', padLeft);
+        yAxis.setAttribute('y1', padTop);
+        yAxis.setAttribute('x2', padLeft);
+        yAxis.setAttribute('y2', padTop + plotHeight);
+        yAxis.setAttribute('stroke', 'black');
+        svg.appendChild(yAxis);
+
+        const xAxis = document.createElementNS(ns, 'line');
+        xAxis.setAttribute('x1', padLeft);
+        xAxis.setAttribute('y1', padTop + plotHeight);
+        xAxis.setAttribute('x2', padLeft + plotWidth);
+        xAxis.setAttribute('y2', padTop + plotHeight);
+        xAxis.setAttribute('stroke', 'black');
+        svg.appendChild(xAxis);
+
+        (options.referenceLines || []).forEach(ref => {
+          const refValue = typeof ref === 'object' ? ref.value : ref;
+          const stroke = typeof ref === 'object' && ref.stroke ? ref.stroke : '#ccc';
+          if (refValue < min || refValue > max) return;
+          const line = document.createElementNS(ns, 'line');
+          line.setAttribute('x1', padLeft);
+          line.setAttribute('y1', yAt(refValue));
+          line.setAttribute('x2', padLeft + plotWidth);
+          line.setAttribute('y2', yAt(refValue));
+          line.setAttribute('stroke', stroke);
+          line.setAttribute('stroke-dasharray', '4,3');
+          svg.appendChild(line);
+        });
+
+        const points = series
+          .map((v, i) => (v != null ? `${xAt(i)},${yAt(v)}` : null))
+          .filter(p => p !== null)
+          .join(' ');
+
+        const polyline = document.createElementNS(ns, 'polyline');
+        polyline.setAttribute('points', points);
+        polyline.setAttribute('fill', 'none');
+        polyline.setAttribute('stroke', options.color || 'steelblue');
+        polyline.setAttribute('stroke-width', '2');
+        svg.appendChild(polyline);
+
+        if (options.trendSeries) {
+          const trendPoints = options.trendSeries
+            .map((v, i) => (v != null ? `${xAt(i)},${yAt(v)}` : null))
+            .filter(p => p !== null)
+            .join(' ');
+          if (trendPoints) {
+            const trendLine = document.createElementNS(ns, 'polyline');
+            trendLine.setAttribute('points', trendPoints);
+            trendLine.setAttribute('fill', 'none');
+            trendLine.setAttribute('stroke', options.trendColor || options.color || 'steelblue');
+            trendLine.setAttribute('stroke-width', '1.5');
+            trendLine.setAttribute('stroke-dasharray', '5,3');
+            svg.appendChild(trendLine);
+          }
+        }
+
+        if (timestamps && timestamps.length === series.length) {
+          if (useTimeScale) {
+            const tickCount = 6;
+            for (let t = 0; t < tickCount; t++) {
+              const time = options.xMin + (t / (tickCount - 1)) * xRange;
+              const label = document.createElementNS(ns, 'text');
+              label.setAttribute('x', padLeft + ((time - options.xMin) / xRange) * plotWidth);
+              label.setAttribute('y', padTop + plotHeight + 13);
+              label.setAttribute('font-size', '9');
+              label.setAttribute('text-anchor', 'middle');
+              label.textContent = formatTick(new Date(time * 1000), rangeKey);
+              svg.appendChild(label);
+            }
+          } else {
+            const tickCount = Math.min(6, timestamps.length);
+            for (let t = 0; t < tickCount; t++) {
+              const i = Math.round((t / (tickCount - 1)) * (timestamps.length - 1));
+              const label = document.createElementNS(ns, 'text');
+              label.setAttribute('x', xAt(i));
+              label.setAttribute('y', padTop + plotHeight + 13);
+              label.setAttribute('font-size', '9');
+              label.setAttribute('text-anchor', 'middle');
+              label.textContent = formatTick(new Date(timestamps[i] * 1000), rangeKey);
+              svg.appendChild(label);
+            }
+          }
+        }
+      }
+
       async function loadChart(symbol, rangeKey) {
         try {
           const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(rangeKey)}`);
           const data = await res.json();
           if (data.error) throw new Error(data.error);
-          renderChart(data.closes, data.timestamps, rangeKey);
+          renderChart(data.closes, data.timestamps, rangeKey, data.movingAverage);
+          renderIndicatorChart('rsi-chart', data.rsi, data.timestamps, rangeKey, {
+            fixedMin: 0, fixedMax: 100, referenceLines: [30, 70], color: 'purple',
+          });
+          const pmaTrend = computeTrendLine(data.priceVsMaPct);
+          renderIndicatorChart('price-ma-chart', data.priceVsMaPct, data.timestamps, rangeKey, {
+            referenceLines: [{ value: 0, stroke: '#ddd' }],
+            color: 'teal',
+            trendSeries: pmaTrend,
+            trendColor: '#888',
+          });
+          renderFearGreedChart(rangeKey);
+
+          const lastRsi = lastValue(data.rsi);
+          document.getElementById('rsi-chart-current').textContent =
+            lastRsi != null ? lastRsi.toFixed(1) : '';
+
+          const lastPma = lastValue(data.priceVsMaPct);
+          const avgPma = data.priceVsMaPctAvg;
+          if (lastPma != null) {
+            const current = `${lastPma > 0 ? '+' : ''}${lastPma.toFixed(2)}%`;
+            const avgText = avgPma != null ? ` (Ø: ${avgPma > 0 ? '+' : ''}${avgPma.toFixed(2)}%)` : '';
+            document.getElementById('price-ma-chart-current').textContent = current + avgText;
+          } else {
+            document.getElementById('price-ma-chart-current').textContent = '';
+          }
 
           const closes = data.closes;
           const changeEl = document.getElementById('range-change');
@@ -161,29 +375,15 @@
           if (data.error) throw new Error(data.error);
 
           const fg = data.fearGreed;
-          document.getElementById('fear-greed').textContent =
+          document.getElementById('feargreed-current').textContent =
             `${fg.score.toFixed(1)} (${fg.rating})`;
+
+          fearGreedHistory = fg.history || [];
+          renderFearGreedChart(currentRange);
 
           document.getElementById('selected-instrument').textContent =
             `${data.market.name} (${data.market.symbol})`;
-
-          const rsi = data.market.rsi14;
-          document.getElementById('rsi14').textContent =
-            rsi !== null ? rsi.toFixed(1) : 'n/a';
-
-          const { price, sma200 } = data.market;
-          if (sma200) {
-            // Preis = 100%, Moving Average als Prozentwert davon.
-            // Negativ = Preis unter dem 200-MA gerutscht (potenzielles Kaufsignal).
-            const diffPct = (100 - (sma200 / price * 100)).toFixed(2);
-            document.getElementById('price-sma').textContent =
-              `${diffPct > 0 ? '+' : ''}${diffPct}% (${price.toFixed(2)} / MA ${sma200.toFixed(2)})`;
-          } else {
-            document.getElementById('price-sma').textContent = 'n/a';
-          }
         } catch (err) {
-          document.getElementById('rsi14').textContent = 'Fehler';
-          document.getElementById('price-sma').textContent = 'Fehler';
           console.error(err);
         }
       }
@@ -267,10 +467,20 @@
         document.getElementById('favorite-star').textContent = isFavorite ? '★' : '☆';
       }
 
+      function moveFavorite(index, direction) {
+        const favs = loadFavorites();
+        const target = index + direction;
+        if (target < 0 || target >= favs.length) return;
+        [favs[index], favs[target]] = [favs[target], favs[index]];
+        saveFavorites(favs);
+        renderFavorites();
+      }
+
       function renderFavorites() {
         const list = document.getElementById('favorites-list');
         list.innerHTML = '';
-        loadFavorites().forEach(fav => {
+        const favs = loadFavorites();
+        favs.forEach((fav, index) => {
           const li = document.createElement('li');
           li.style.marginBottom = '6px';
           li.style.display = 'flex';
@@ -291,19 +501,44 @@
             selectSymbol(fav.symbol);
           });
 
+          const actions = document.createElement('span');
+          actions.style.display = 'flex';
+          actions.style.flexShrink = '0';
+          actions.style.marginLeft = '4px';
+
+          const upBtn = document.createElement('button');
+          upBtn.type = 'button';
+          upBtn.textContent = '↑';
+          upBtn.title = 'Nach oben';
+          upBtn.disabled = index === 0;
+          upBtn.style.marginLeft = '2px';
+          upBtn.addEventListener('click', () => moveFavorite(index, -1));
+
+          const downBtn = document.createElement('button');
+          downBtn.type = 'button';
+          downBtn.textContent = '↓';
+          downBtn.title = 'Nach unten';
+          downBtn.disabled = index === favs.length - 1;
+          downBtn.style.marginLeft = '2px';
+          downBtn.addEventListener('click', () => moveFavorite(index, 1));
+
           const removeBtn = document.createElement('button');
           removeBtn.type = 'button';
           removeBtn.textContent = '×';
           removeBtn.title = 'Entfernen';
-          removeBtn.style.marginLeft = '4px';
+          removeBtn.style.marginLeft = '2px';
           removeBtn.addEventListener('click', () => {
             saveFavorites(loadFavorites().filter(f => f.symbol !== fav.symbol));
             renderFavorites();
             updateFavoriteStar();
           });
 
+          actions.appendChild(upBtn);
+          actions.appendChild(downBtn);
+          actions.appendChild(removeBtn);
+
           li.appendChild(link);
-          li.appendChild(removeBtn);
+          li.appendChild(actions);
           list.appendChild(li);
         });
       }
