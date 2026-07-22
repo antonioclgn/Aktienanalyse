@@ -30,6 +30,14 @@ YAHOO_CHART_URL_PERIOD = (
     "?period1={period1}&period2={period2}&interval={interval}"
 )
 YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=8&newsCount=0"
+# CFTC Commitments of Traders (wöchentlich, dienstags erhoben, freitags veröffentlicht).
+# "Consolidated" fasst den großen und den E-Mini-Kontrakt zusammen und ist als einzige
+# S&P-500-Reihe von 2010 bis heute lückenlos durchgehend.
+CFTC_COT_URL = "https://publicreporting.cftc.gov/resource/6dca-aqww.json"
+CFTC_SP500_MARKET = "S&P 500 Consolidated - CHICAGO MERCANTILE EXCHANGE"
+COT_PERCENTILE_WINDOW = 156  # 3 Jahre Wochenberichte
+COT_PERCENTILE_WARMUP = 52   # erst ab 1 Jahr Historie einen Rang ausgeben
+COT_CACHE_TTL_SECONDS = 6 * 3600  # Daten ändern sich nur einmal pro Woche
 DEFAULT_SYMBOL = "SXR8.DE"  # iShares Core S&P 500 UCITS ETF USD (Acc)
 
 # Zeitraum (fürs Frontend) -> Yahoo-Interval
@@ -92,6 +100,13 @@ def fetch_json(url, extra_headers=None):
     req = Request(url, headers=headers)
     with urlopen(req, timeout=10) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def percentile_rank(values, value):
+    """Anteil der Werte in `values`, die <= `value` sind, in Prozent."""
+    if not values:
+        return 0.0
+    return 100.0 * sum(1 for v in values if v <= value) / len(values)
 
 
 def compute_rsi14(closes):
@@ -162,13 +177,13 @@ def get_market_data(symbol):
     }
 
 
-# "200 Tage" bezieht sich auf Handelstage. Bei Wochenkerzen (5y/10y) muss das
-# Fenster daher in Wochen umgerechnet werden (200 Handelstage ≈ 40 Wochen),
-# sonst würde dort ein 200-WOCHEN-Durchschnitt (~4 Jahre) berechnet.
-MA_WINDOW_BY_INTERVAL = {
-    "1wk": 40,
-}
-MA_WINDOW_DEFAULT = 200
+# Fenster werden in HANDELSTAGEN angegeben. Bei Wochenkerzen (5y/10y) muss das
+# in Wochen umgerechnet werden (200 Handelstage ≈ 40 Wochen), sonst käme dort ein
+# 200-WOCHEN-Durchschnitt (~4 Jahre) heraus.
+TRADING_DAYS_PER_WEEK = 5
+MA_WINDOW_DEFAULT = 200          # Linie im Kurschart
+MA_DEVIATION_WINDOW_DEFAULT = 150  # Bezug für die Moving Average Deviation
+MA_WINDOW_MIN, MA_WINDOW_MAX = 5, 400
 
 # Bei diesen (untertägigen) Intervallen reicht die eigene Historie nie für einen
 # 200-Tage-Durchschnitt. Stattdessen wird er separat aus Tageskursen berechnet und
@@ -191,7 +206,7 @@ def compute_moving_average(closes, window):
     return result
 
 
-def get_daily_moving_average_by_date(symbol):
+def get_daily_moving_average_by_date(symbol, window=MA_WINDOW_DEFAULT):
     period2 = int(time.time())
     period1 = period2 - MA_DAILY_LOOKBACK_DAYS * 86400
     url = YAHOO_CHART_URL_PERIOD.format(
@@ -205,7 +220,7 @@ def get_daily_moving_average_by_date(symbol):
     points = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
     daily_timestamps = [p[0] for p in points]
     daily_closes = [p[1] for p in points]
-    ma_series = compute_moving_average(daily_closes, MA_WINDOW_DEFAULT)
+    ma_series = compute_moving_average(daily_closes, window)
 
     return {
         time.strftime("%Y-%m-%d", time.gmtime(t)): ma
@@ -214,7 +229,32 @@ def get_daily_moving_average_by_date(symbol):
     }
 
 
-def get_history(symbol, range_key):
+def moving_average_for_window(days, interval, symbol, all_closes, all_timestamps):
+    """Gleitender Durchschnitt über `days` Handelstage, passend zum Kerzenintervall."""
+    if interval in INTRADAY_INTERVALS:
+        # Untertägig reicht die eigene Historie nie: aus Tageskursen berechnen und
+        # pro Kalendertag auf die untertägigen Punkte übertragen.
+        by_date = cached(
+            ("daily_ma", symbol, days), CACHE_TTL_SECONDS,
+            lambda: get_daily_moving_average_by_date(symbol, days),
+        )
+        sorted_dates = sorted(by_date)
+        series = []
+        for t in all_timestamps:
+            date_key = time.strftime("%Y-%m-%d", time.gmtime(t))
+            # Vorwärts auffüllen: der letzte (z.B. noch laufende) Handelstag hat oft
+            # noch keinen fertigen Tagesschlusskurs -> mit dem letzten bekannten Wert auffüllen.
+            idx = bisect.bisect_right(sorted_dates, date_key) - 1
+            series.append(by_date[sorted_dates[idx]] if idx >= 0 else None)
+        return series
+
+    bars = days
+    if interval == "1wk":
+        bars = max(1, round(days / TRADING_DAYS_PER_WEEK))
+    return compute_moving_average(all_closes, bars)
+
+
+def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
     if range_key not in CHART_RANGES:
         range_key = DEFAULT_CHART_RANGE
     interval = CHART_RANGES[range_key]
@@ -239,21 +279,11 @@ def get_history(symbol, range_key):
     all_timestamps = [p[0] for p in points]
     all_closes = [p[1] for p in points]
 
-    if interval in INTRADAY_INTERVALS:
-        daily_ma_by_date = cached(
-            ("daily_ma", symbol), CACHE_TTL_SECONDS, lambda: get_daily_moving_average_by_date(symbol)
-        )
-        sorted_dates = sorted(daily_ma_by_date)
-        moving_average = []
-        for t in all_timestamps:
-            date_key = time.strftime("%Y-%m-%d", time.gmtime(t))
-            # Vorwärts auffüllen: der letzte (z.B. noch laufende) Handelstag hat oft
-            # noch keinen fertigen Tagesschlusskurs -> mit dem letzten bekannten Wert auffüllen.
-            idx = bisect.bisect_right(sorted_dates, date_key) - 1
-            moving_average.append(daily_ma_by_date[sorted_dates[idx]] if idx >= 0 else None)
-    else:
-        ma_window = MA_WINDOW_BY_INTERVAL.get(interval, MA_WINDOW_DEFAULT)
-        moving_average = compute_moving_average(all_closes, ma_window)
+    # Ein einziger gleitender Durchschnitt über das einstellbare Fenster: er wird im
+    # Kurschart gezeichnet und ist zugleich der Bezug für die Abweichung darunter.
+    moving_average = moving_average_for_window(
+        ma_window, interval, symbol, all_closes, all_timestamps
+    )
 
     rsi_series = compute_rsi_series(all_closes, 14)
     price_vs_ma_pct = [
@@ -278,6 +308,7 @@ def get_history(symbol, range_key):
         "timestamps": all_timestamps[start_index:],
         "closes": all_closes[start_index:],
         "movingAverage": moving_average[start_index:],
+        "maWindow": ma_window,
         "rsi": rsi_series[start_index:],
         "priceVsMaPct": price_vs_ma_pct_display,
         "priceVsMaPctAvg": price_vs_ma_pct_avg,
@@ -309,6 +340,69 @@ def load_bundled_feargreed_history():
         {"t": calendar.timegm(time.strptime(row["date"], "%Y-%m-%d")), "score": float(row["score"])}
         for row in rows
     ]
+
+
+def get_smart_dumb_money():
+    """Nachbau von "Smart Money vs Dumb Money" aus den öffentlichen CFTC-COT-Daten.
+
+    Der Originalindikator (SentimenTrader) ist proprietär; seine Grundidee lässt sich
+    aber aus den wöchentlichen Positionsdaten rekonstruieren:
+      Smart Money = Commercials (Absicherer mit Warenbezug, gelten als informiert)
+      Dumb Money  = Non-Reportables (Kleinspekulanten unterhalb der Meldegrenze)
+    Beide als Nettoposition in Prozent des Open Interest, anschließend über ein
+    rollierendes Fenster in einen Perzentilrang 0..100 überführt ("Confidence").
+    Hoher Smart-Wert = Profis sind long positioniert (bullisch), hoher Dumb-Wert =
+    Kleinanleger sind long positioniert (üblicherweise ein Warnsignal).
+
+    Achtung: markt-weit (S&P 500), nicht pro Einzelwert — wie Fear & Greed.
+    """
+    url = (
+        f"{CFTC_COT_URL}?market_and_exchange_names={quote(CFTC_SP500_MARKET, safe='')}"
+        "&$select=report_date_as_yyyy_mm_dd,comm_positions_long_all,comm_positions_short_all,"
+        "nonrept_positions_long_all,nonrept_positions_short_all,open_interest_all"
+        "&$order=report_date_as_yyyy_mm_dd ASC&$limit=5000"
+    ).replace(" ", "%20")
+    rows = fetch_json(url)
+
+    points = []
+    for row in rows:
+        try:
+            open_interest = float(row["open_interest_all"])
+            if open_interest <= 0:
+                continue
+            commercial_net = (
+                float(row["comm_positions_long_all"]) - float(row["comm_positions_short_all"])
+            )
+            small_net = (
+                float(row["nonrept_positions_long_all"]) - float(row["nonrept_positions_short_all"])
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+        timestamp = calendar.timegm(
+            time.strptime(row["report_date_as_yyyy_mm_dd"][:10], "%Y-%m-%d")
+        )
+        points.append((timestamp, commercial_net / open_interest * 100, small_net / open_interest * 100))
+
+    history = []
+    for i in range(COT_PERCENTILE_WARMUP, len(points)):
+        window = points[max(0, i - COT_PERCENTILE_WINDOW + 1): i + 1]
+        smart = percentile_rank([p[1] for p in window], points[i][1])
+        dumb = percentile_rank([p[2] for p in window], points[i][2])
+        history.append({
+            "t": points[i][0],
+            "smart": round(smart, 1),
+            "dumb": round(dumb, 1),
+            "spread": round(smart - dumb, 1),
+        })
+
+    latest = history[-1] if history else None
+    return {
+        "history": history,
+        "smart": latest["smart"] if latest else None,
+        "dumb": latest["dumb"] if latest else None,
+        "spread": latest["spread"] if latest else None,
+        "timestamp": latest["t"] if latest else None,
+    }
 
 
 def get_fear_greed():
@@ -354,14 +448,21 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/data":
             symbol = query.get("symbol", [DEFAULT_SYMBOL])[0].strip() or DEFAULT_SYMBOL
             try:
-                with ThreadPoolExecutor(max_workers=2) as pool:
+                with ThreadPoolExecutor(max_workers=3) as pool:
                     market_future = pool.submit(
                         cached, ("market", symbol), CACHE_TTL_SECONDS, lambda: get_market_data(symbol)
                     )
                     fear_greed_future = pool.submit(
                         cached, "fear_greed", CACHE_TTL_SECONDS, get_fear_greed
                     )
-                    payload = {"market": market_future.result(), "fearGreed": fear_greed_future.result()}
+                    smart_dumb_future = pool.submit(
+                        cached, "smart_dumb", COT_CACHE_TTL_SECONDS, get_smart_dumb_money
+                    )
+                    payload = {
+                        "market": market_future.result(),
+                        "fearGreed": fear_greed_future.result(),
+                        "smartDumbMoney": smart_dumb_future.result(),
+                    }
                 self._send_json(payload)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=502)
@@ -373,8 +474,14 @@ class Handler(BaseHTTPRequestHandler):
             if range_key not in CHART_RANGES:
                 range_key = DEFAULT_CHART_RANGE
             try:
+                ma_window = int(query.get("maWindow", [MA_DEVIATION_WINDOW_DEFAULT])[0])
+            except ValueError:
+                ma_window = MA_DEVIATION_WINDOW_DEFAULT
+            ma_window = max(MA_WINDOW_MIN, min(MA_WINDOW_MAX, ma_window))
+            try:
                 result = cached(
-                    ("history", symbol, range_key), CACHE_TTL_SECONDS, lambda: get_history(symbol, range_key)
+                    ("history", symbol, range_key, ma_window), CACHE_TTL_SECONDS,
+                    lambda: get_history(symbol, range_key, ma_window),
                 )
                 self._send_json(result)
             except Exception as exc:

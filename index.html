@@ -43,13 +43,19 @@
       <svg id="feargreed-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
 
       <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
+        <span>Smart Money vs Dumb Money</span>
+        <span id="smartdumb-chart-current"></span>
+      </div>
+      <svg id="smartdumb-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
+
+      <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
         <span>RSI 14</span>
         <span id="rsi-chart-current"></span>
       </div>
       <svg id="rsi-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
 
       <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
-        <span>Moving Average Deviation</span>
+        <span id="price-ma-chart-title">Moving Average Deviation</span>
         <span id="price-ma-chart-current"></span>
       </div>
       <svg id="price-ma-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
@@ -60,7 +66,12 @@
       <ul id="favorites-list" style="list-style: none; padding: 0; margin: 0;"></ul>
       <section style="margin-top: auto; padding-top: 10px; border-top: 1px solid #ccc; min-height: 25vh; font-size: 12px;">
         <h2 style="font-size: 14px; margin: 0 0 8px;">Balken-Einstellungen</h2>
-        <div style="color: #666; margin-bottom: 8px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen.</div>
+        <div style="color: #666; margin-bottom: 6px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen. Gilt für alle Werte.</div>
+        <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 8px;">
+          <select id="preset-select" style="flex: 1; min-width: 0;"></select>
+          <button id="save-preset" type="button" title="Aktuelle Werte als Variante speichern">Speichern</button>
+          <button id="delete-preset" type="button" title="Gewählte Variante löschen">×</button>
+        </div>
         <label style="display: block; margin-bottom: 5px;">
           <input id="toggle-highlight-feargreed" type="checkbox">
           Fear &amp; Greed berücksichtigen
@@ -69,6 +80,17 @@
         <div style="display: flex; gap: 4px; align-items: center; margin: 0 0 7px 22px;">
           <label>kaufen ≤ <input id="highlight-feargreed-buy" type="number" min="0" max="100" step="0.1" style="width: 52px;"></label>
           <label>verkaufen ≥ <input id="highlight-feargreed-sell" type="number" min="0" max="100" step="0.1" style="width: 52px;"></label>
+        </div>
+        <label style="display: block; margin-bottom: 3px;">
+          <input id="toggle-highlight-smartdumb" type="checkbox">
+          Smart/Dumb Money berücksichtigen
+        </label>
+        <div style="color: #666; margin: 0 0 3px 22px; font-size: 11px;">
+          Spread = Smart minus Dumb. Standard: kaufen ≥ 50, verkaufen ≤ −50.
+        </div>
+        <div style="display: flex; gap: 4px; align-items: center; margin: 0 0 7px 22px;">
+          <label>kaufen ≥ <input id="highlight-smartdumb-buy" type="number" min="-100" max="100" step="1" style="width: 52px;"></label>
+          <label>verkaufen ≤ <input id="highlight-smartdumb-sell" type="number" min="-100" max="100" step="1" style="width: 52px;"></label>
         </div>
         <label style="display: block; margin-bottom: 3px;">
           <input id="toggle-highlight-rsi" type="checkbox">
@@ -83,11 +105,13 @@
           <input id="toggle-highlight-pma" type="checkbox">
           Moving-Average-Abweichung berücksichtigen
         </label>
-        <div style="color: #666; margin: 0 0 3px 22px; font-size: 11px;">Standard: 1× Standardabweichung</div>
+        <div style="color: #666; margin: 0 0 3px 22px; font-size: 11px;">Standard: 150-Tage-Durchschnitt, 1× Standardabweichung</div>
+        <label style="display: block; margin: 0 0 3px 22px;">
+          Durchschnitt über <input id="highlight-ma-window" type="number" min="5" max="400" step="5" style="width: 52px;"> Handelstage
+        </label>
         <label style="display: block; margin: 0 0 7px 22px;">
           Bandabstand: <input id="highlight-pma-multiplier" type="number" min="0" step="0.1" style="width: 52px;"> × Standardabweichung
         </label>
-        <button id="reset-highlight-settings" type="button" style="font-size: 11px;">Auf Standard zurücksetzen</button>
       </section>
     </aside>
   </div>
@@ -102,60 +126,151 @@
       let lastChartTimestamps = null;
       let lastHighlightRanges = [];
       let lastChartData = null;
-      const HIGHLIGHT_SETTINGS_KEY = 'aktienanalyse-highlight-settings';
+      const HIGHLIGHT_SETTINGS_KEY = 'aktienanalyse-highlight-settings'; // alt: je Symbol
+      const ACTIVE_SETTINGS_KEY = 'aktienanalyse-highlight-active';
+      const PRESETS_KEY = 'aktienanalyse-highlight-presets';
+      const DEFAULT_PRESET_NAME = 'Standard';
+      const CUSTOM_PRESET_LABEL = 'Eigene (ungespeichert)';
       const DEFAULT_HIGHLIGHT_SETTINGS = {
         useFearGreed: true,
         useRsi: true,
         usePma: true,
+        useSmartDumb: true,
         fearGreedBuy: 25,
         fearGreedSell: 75,
         rsiBuy: 30,
         rsiSell: 70,
         pmaStdMultiplier: 1,
+        maDeviationWindow: 150,
+        smartDumbBuy: 50,
+        smartDumbSell: -50,
       };
+      // Das Durchschnittsfenster wird serverseitig gerechnet und braucht daher neue
+      // Daten; alles andere lässt sich aus den vorhandenen Daten neu zeichnen.
+      const SERVER_SIDE_SETTINGS = new Set(['maDeviationWindow']);
       let highlightSettings = { ...DEFAULT_HIGHLIGHT_SETTINGS };
+      let highlightPresets = {};
 
-      function loadHighlightSettings(symbol) {
-        let allSettings = {};
+      function readStored(key, fallback) {
         try {
-          allSettings = JSON.parse(localStorage.getItem(HIGHLIGHT_SETTINGS_KEY)) || {};
+          return JSON.parse(localStorage.getItem(key)) || fallback;
         } catch {
-          allSettings = {};
+          return fallback;
         }
-        highlightSettings = { ...DEFAULT_HIGHLIGHT_SETTINGS, ...(allSettings[symbol] || {}) };
+      }
+
+      // Früher wurden die Einstellungen pro Symbol gespeichert. Beim ersten Start mit
+      // der neuen (globalen) Variante werden die Werte des zuletzt gewählten Symbols
+      // übernommen, damit niemand seine Einstellungen verliert.
+      function migrateLegacySettings() {
+        if (localStorage.getItem(ACTIVE_SETTINGS_KEY)) return;
+        const perSymbol = readStored(HIGHLIGHT_SETTINGS_KEY, null);
+        if (!perSymbol) return;
+        const legacy = perSymbol[currentSymbol] || Object.values(perSymbol)[0];
+        if (legacy) localStorage.setItem(ACTIVE_SETTINGS_KEY, JSON.stringify(legacy));
+      }
+
+      // Varianten, die vor der Einführung eines Reglers gespeichert wurden, enthalten
+      // dessen Schlüssel nicht. Vor jedem Vergleich deshalb mit den Standardwerten
+      // auffüllen — sonst gälte so eine Variante nie als "ausgewählt".
+      function normalizeSettings(settings) {
+        return { ...DEFAULT_HIGHLIGHT_SETTINGS, ...settings };
+      }
+
+      function sameSettings(a, b) {
+        const left = normalizeSettings(a);
+        const right = normalizeSettings(b);
+        return Object.keys(DEFAULT_HIGHLIGHT_SETTINGS)
+          .every(key => left[key] === right[key]);
+      }
+
+      // Name der Variante, die exakt den aktuellen Werten entspricht (sonst null).
+      function matchingPresetName() {
+        if (sameSettings(highlightSettings, DEFAULT_HIGHLIGHT_SETTINGS)) return DEFAULT_PRESET_NAME;
+        return Object.keys(highlightPresets)
+          .find(name => sameSettings(highlightSettings, highlightPresets[name])) || null;
+      }
+
+      function renderPresetOptions() {
+        const select = document.getElementById('preset-select');
+        const active = matchingPresetName();
+        select.innerHTML = '';
+        const names = [DEFAULT_PRESET_NAME, ...Object.keys(highlightPresets).sort()];
+        if (!active) names.push(CUSTOM_PRESET_LABEL);
+        names.forEach(name => {
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = name;
+          select.appendChild(option);
+        });
+        select.value = active || CUSTOM_PRESET_LABEL;
+        document.getElementById('delete-preset').disabled = !(active && highlightPresets[active]);
+      }
+
+      function applyHighlightSettings(settings) {
+        const previous = highlightSettings;
+        highlightSettings = normalizeSettings(settings);
+        saveHighlightSettings();
+        loadHighlightSettings();
+        // Enthält die Variante ein anderes Durchschnittsfenster, reicht Neuzeichnen
+        // nicht — die Daten dafür kommen vom Server.
+        const needsReload = [...SERVER_SIDE_SETTINGS]
+          .some(key => highlightSettings[key] !== previous[key]);
+        if (lastChartData && !needsReload) {
+          rerenderHighlightCharts();
+        } else {
+          loadChart(currentSymbol, currentRange);
+        }
+      }
+
+      function saveCurrentAsPreset() {
+        const suggestion = matchingPresetName() === DEFAULT_PRESET_NAME ? '' : (matchingPresetName() || '');
+        const name = (prompt('Name der Variante:', suggestion) || '').trim();
+        if (!name || name === DEFAULT_PRESET_NAME || name === CUSTOM_PRESET_LABEL) return;
+        highlightPresets[name] = { ...highlightSettings };
+        localStorage.setItem(PRESETS_KEY, JSON.stringify(highlightPresets));
+        renderPresetOptions();
+      }
+
+      function deleteSelectedPreset() {
+        const name = document.getElementById('preset-select').value;
+        if (!highlightPresets[name]) return;
+        delete highlightPresets[name];
+        localStorage.setItem(PRESETS_KEY, JSON.stringify(highlightPresets));
+        renderPresetOptions();
+      }
+
+      function loadHighlightSettings() {
+        highlightPresets = readStored(PRESETS_KEY, {});
+        highlightSettings = {
+          ...DEFAULT_HIGHLIGHT_SETTINGS,
+          ...readStored(ACTIVE_SETTINGS_KEY, {}),
+        };
 
         document.getElementById('toggle-highlight-feargreed').checked = highlightSettings.useFearGreed;
         document.getElementById('toggle-highlight-rsi').checked = highlightSettings.useRsi;
         document.getElementById('toggle-highlight-pma').checked = highlightSettings.usePma;
+        document.getElementById('toggle-highlight-smartdumb').checked = highlightSettings.useSmartDumb;
         document.getElementById('highlight-feargreed-buy').value = highlightSettings.fearGreedBuy;
         document.getElementById('highlight-feargreed-sell').value = highlightSettings.fearGreedSell;
         document.getElementById('highlight-rsi-buy').value = highlightSettings.rsiBuy;
         document.getElementById('highlight-rsi-sell').value = highlightSettings.rsiSell;
         document.getElementById('highlight-pma-multiplier').value = highlightSettings.pmaStdMultiplier;
+        document.getElementById('highlight-ma-window').value = highlightSettings.maDeviationWindow;
+        document.getElementById('highlight-smartdumb-buy').value = highlightSettings.smartDumbBuy;
+        document.getElementById('highlight-smartdumb-sell').value = highlightSettings.smartDumbSell;
+        renderPresetOptions();
       }
 
       function saveHighlightSettings() {
-        let allSettings = {};
-        try {
-          allSettings = JSON.parse(localStorage.getItem(HIGHLIGHT_SETTINGS_KEY)) || {};
-        } catch {
-          allSettings = {};
-        }
-        allSettings[currentSymbol] = highlightSettings;
-        localStorage.setItem(HIGHLIGHT_SETTINGS_KEY, JSON.stringify(allSettings));
-      }
-
-      function resetHighlightSettings() {
-        highlightSettings = { ...DEFAULT_HIGHLIGHT_SETTINGS };
-        saveHighlightSettings();
-        loadHighlightSettings(currentSymbol);
-        rerenderHighlightCharts();
+        localStorage.setItem(ACTIVE_SETTINGS_KEY, JSON.stringify(highlightSettings));
       }
 
       function updateHighlightSetting(name, value) {
         highlightSettings[name] = value;
         saveHighlightSettings();
-        if (lastChartData) {
+        renderPresetOptions();
+        if (lastChartData && !SERVER_SIDE_SETTINGS.has(name)) {
           rerenderHighlightCharts();
         } else {
           loadChart(currentSymbol, currentRange);
@@ -230,10 +345,14 @@
       function renderHighlightRects(svg, ns, rects) {
         rects.forEach(r => {
           const style = HIGHLIGHT_STYLES[r.type] || { color: '#999', opacity: 0.12 };
+          // Einzelne Trigger-Punkte (x1 == x2) wären sonst unsichtbar: auf die
+          // Mindestbreite aufziehen und dabei um ihren Zeitpunkt herum zentrieren.
+          const width = Math.max(Math.abs(r.x2 - r.x1), style.minWidth || 1);
+          const center = (r.x1 + r.x2) / 2;
           const rect = document.createElementNS(ns, 'rect');
-          rect.setAttribute('x', Math.min(r.x1, r.x2));
+          rect.setAttribute('x', Math.min(Math.min(r.x1, r.x2), center - width / 2));
           rect.setAttribute('y', r.y);
-          rect.setAttribute('width', Math.max(Math.abs(r.x2 - r.x1), style.minWidth || 1));
+          rect.setAttribute('width', width);
           rect.setAttribute('height', r.height);
           rect.setAttribute('fill', style.color);
           rect.setAttribute('opacity', String(style.opacity));
@@ -357,14 +476,34 @@
         return result;
       }
 
+      // Smart/Dumb Money kommt aus wöchentlichen CFTC-Daten und wird — wie Fear & Greed —
+      // per Vorwärts-Auffüllen auf die (täglichen/stündlichen) Kurszeitpunkte gelegt.
+      let smartDumbHistory = [];
+
+      function smartDumbAt(ts) {
+        let lo = 0, hi = smartDumbHistory.length - 1, result = null;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (smartDumbHistory[mid].t <= ts) {
+            result = smartDumbHistory[mid];
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        return result;
+      }
+
       // Findet zusammenhängende Zeiträume, in denen gleichzeitig gilt:
-      // grün = aktivierte Indikatoren zeigen ein Kaufsignal
-      // rot  = aktivierte Indikatoren zeigen ein Verkaufssignal
+      // grün = alle aktivierten Indikatoren zeigen ein Kaufsignal
+      // rot  = alle aktivierten Indikatoren zeigen ein Verkaufssignal
       function computeHighlightRanges(timestamps, rsi, pma, pmaUpper, pmaLower) {
         const types = timestamps.map((t, i) => {
           const fg = fearGreedScoreAt(t);
+          const smartDumb = smartDumbAt(t);
           if ((highlightSettings.useFearGreed && fg == null)
             || (highlightSettings.useRsi && rsi[i] == null)
+            || (highlightSettings.useSmartDumb && smartDumb == null)
             || (highlightSettings.usePma
               && (pma[i] == null || pmaUpper[i] == null || pmaLower[i] == null))) {
             return null;
@@ -382,6 +521,11 @@
           if (highlightSettings.usePma) {
             buyConditions.push(pma[i] < pmaLower[i]);
             sellConditions.push(pma[i] > pmaUpper[i]);
+          }
+          // Profis long und Kleinanleger short -> Kaufsignal, umgekehrt Verkaufssignal.
+          if (highlightSettings.useSmartDumb) {
+            buyConditions.push(smartDumb.spread >= highlightSettings.smartDumbBuy);
+            sellConditions.push(smartDumb.spread <= highlightSettings.smartDumbSell);
           }
 
           if (!buyConditions.length) return null;
@@ -433,6 +577,32 @@
         );
       }
 
+      function renderSmartDumbChart(rangeKey, highlightRanges, timestamps) {
+        if (!smartDumbHistory.length || !timestamps || !timestamps.length) return;
+        // Statt zweier sich kreuzender Linien nur den Spread (Smart minus Dumb) als
+        // graue Linie: die Fläche darunter zeigt grün/rot, wer gerade dominiert.
+        const spread = timestamps.map(t => (smartDumbAt(t) || {}).spread ?? null);
+
+        renderIndicatorChart('smartdumb-chart', spread, timestamps, rangeKey, {
+          fixedMin: -100, fixedMax: 100,
+          signedArea: true,
+          referenceLines: [
+            { value: 0, stroke: '#ddd', dashed: false },
+            highlightSettings.smartDumbBuy,
+            highlightSettings.smartDumbSell,
+          ],
+          color: '#888',
+          formatValue: v => `${v > 0 ? '+' : ''}${v.toFixed(0)}`,
+          padLeft: sharedChartPadLeft, highlightRanges,
+        });
+
+        const latest = smartDumbAt(timestamps[timestamps.length - 1]);
+        document.getElementById('smartdumb-chart-current').textContent = latest
+          ? `Smart ${latest.smart.toFixed(0)} / Dumb ${latest.dumb.toFixed(0)}`
+            + ` (Spread ${latest.spread > 0 ? '+' : ''}${latest.spread.toFixed(0)})`
+          : '';
+      }
+
       // Kumulierter (laufender) Durchschnitt: result[i] = Durchschnitt von series[0..i].
       // Dadurch bewegt sich die Linie (statt starr zu sein) und landet am rechten
       // Rand exakt beim Gesamtdurchschnitt des Zeitraums (= derselbe Wert wie "Ø" im Text).
@@ -446,6 +616,8 @@
         }
         return result;
       }
+
+      const pmaFormat = v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
 
       function rerenderHighlightCharts() {
         const data = lastChartData;
@@ -469,6 +641,8 @@
           : [];
 
         renderChart(data.closes, data.timestamps, currentRange, data.movingAverage, sharedChartPadLeft, highlightRanges);
+        document.getElementById('price-ma-chart-title').textContent =
+          `Moving Average Deviation (${data.maWindow} Tage)`;
         renderIndicatorChart('rsi-chart', data.rsi, data.timestamps, currentRange, {
           fixedMin: 0, fixedMax: 100,
           referenceLines: [highlightSettings.rsiBuy, highlightSettings.rsiSell],
@@ -476,9 +650,11 @@
           padLeft: sharedChartPadLeft, highlightRanges,
         });
         renderIndicatorChart('price-ma-chart', data.priceVsMaPct, data.timestamps, currentRange, {
-          color: 'teal', overlays: pmaOverlays, formatValue: v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`,
+          color: 'teal', overlays: pmaOverlays, formatValue: pmaFormat,
           padLeft: sharedChartPadLeft, highlightRanges,
         });
+        renderSmartDumbChart(currentRange, highlightRanges, data.timestamps);
+
         lastChartTimestamps = data.timestamps;
         lastHighlightRanges = highlightRanges;
         renderFearGreedChart(currentRange, highlightRanges, data.timestamps);
@@ -571,6 +747,38 @@
 
         renderYAxisLabels(svg, padLeft, padTop, plotHeight, min, max, formatValue);
 
+        // Fläche zwischen Linie und Nulllinie, eingefärbt nach Vorzeichen. Umgesetzt als
+        // dicht aneinanderliegende Rechtecke statt als Polygon — das spart das Berechnen
+        // der Nulldurchgänge und sieht bei den hier üblichen Punktdichten identisch aus.
+        // Wird vor den Schwellenlinien gezeichnet, damit die scharf darüber liegen.
+        if (options.signedArea) {
+          const zeroY = yAt(Math.min(Math.max(0, min), max));
+          const step = plotWidth / Math.max(series.length - 1, 1);
+          // Die Rechtecke selbst sind deckend und liegen pro Farbe in einer Gruppe, die
+          // als Ganzes transparent gestellt wird. Würde jedes Rechteck einzeln
+          // transparent gezeichnet, addierte sich die Deckkraft an den Überlappungen
+          // zu sichtbaren senkrechten Streifen.
+          const groups = {};
+          ['#16a34a', '#dc2626'].forEach(color => {
+            const group = document.createElementNS(ns, 'g');
+            group.setAttribute('opacity', '0.18');
+            groups[color] = group;
+            svg.appendChild(group);
+          });
+          series.forEach((v, i) => {
+            if (v == null) return;
+            const y = yAt(v);
+            const area = document.createElementNS(ns, 'rect');
+            area.setAttribute('x', xAt(i) - step / 2);
+            area.setAttribute('y', Math.min(y, zeroY));
+            // Leichte Überbreite, damit zwischen den Rechtecken keine hellen Nähte entstehen.
+            area.setAttribute('width', step + 0.5);
+            area.setAttribute('height', Math.abs(zeroY - y));
+            area.setAttribute('fill', v >= 0 ? '#16a34a' : '#dc2626');
+            groups[v >= 0 ? '#16a34a' : '#dc2626'].appendChild(area);
+          });
+        }
+
         (options.referenceLines || []).forEach(ref => {
           const refValue = typeof ref === 'object' ? ref.value : ref;
           const stroke = typeof ref === 'object' && ref.stroke ? ref.stroke : '#ccc';
@@ -610,7 +818,7 @@
           overlayLine.setAttribute('fill', 'none');
           overlayLine.setAttribute('stroke', overlay.color || '#ccc');
           overlayLine.setAttribute('stroke-width', '1.5');
-          overlayLine.setAttribute('stroke-dasharray', '5,3');
+          if (overlay.dashed !== false) overlayLine.setAttribute('stroke-dasharray', '5,3');
           svg.appendChild(overlayLine);
         });
 
@@ -645,7 +853,9 @@
 
       async function loadChart(symbol, rangeKey) {
         try {
-          const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(rangeKey)}`);
+          const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}`
+            + `&range=${encodeURIComponent(rangeKey)}`
+            + `&maWindow=${encodeURIComponent(highlightSettings.maDeviationWindow)}`);
           const data = await res.json();
           if (data.error) throw new Error(data.error);
           lastChartData = data;
@@ -657,51 +867,15 @@
             ? computeLeftPadding(Math.min(...priceValues), Math.max(...priceValues), v => v.toFixed(2), 8, 30)
             : 30;
           const pmaValues = (data.priceVsMaPct || []).filter(v => v != null);
-          const pmaFormat = v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
           const pmaPadLeft = pmaValues.length
             ? computeLeftPadding(Math.min(...pmaValues), Math.max(...pmaValues), pmaFormat, 8, 30)
             : 30;
           const rsiPadLeft = computeLeftPadding(0, 100, v => v.toFixed(0), 8, 30);
           sharedChartPadLeft = Math.max(mainPadLeft, pmaPadLeft, rsiPadLeft);
 
-          const pmaTrend = computeTrendLine(data.priceVsMaPct);
-          const pmaAvg = data.priceVsMaPctAvg;
-          const pmaStd = data.priceVsMaPctStd;
-          // Ober-/Unterband folgen der Trendlinie im konstanten Abstand von 1 Standardabweichung
-          // (statt starrer horizontaler Linien) — wie bei Bollinger Bändern um eine Moving Average.
-          const pmaBandDistance = pmaStd != null ? pmaStd * highlightSettings.pmaStdMultiplier : null;
-          const pmaUpper = pmaBandDistance != null ? pmaTrend.map(v => (v != null ? v + pmaBandDistance : null)) : null;
-          const pmaLower = pmaBandDistance != null ? pmaTrend.map(v => (v != null ? v - pmaBandDistance : null)) : null;
-          const pmaOverlays = [{ series: pmaTrend, color: '#ccc' }];
-          if (pmaUpper) pmaOverlays.push({ series: pmaUpper, color: '#ccc' });
-          if (pmaLower) pmaOverlays.push({ series: pmaLower, color: '#ccc' });
-
-          // Kauf-/Verkaufssignal-Zeiträume: Fear&Greed extrem + RSI extrem + Deviation
-          // außerhalb der Std.-Abw.-Bänder, gleichzeitig -> grün/rot über alle Charts markieren.
-          const highlightRanges = ((!highlightSettings.usePma) || (pmaUpper && pmaLower))
-            ? computeHighlightRanges(data.timestamps, data.rsi, data.priceVsMaPct, pmaUpper, pmaLower)
-            : [];
-
-          renderChart(data.closes, data.timestamps, rangeKey, data.movingAverage, sharedChartPadLeft, highlightRanges);
-          renderIndicatorChart('rsi-chart', data.rsi, data.timestamps, rangeKey, {
-            fixedMin: 0, fixedMax: 100,
-            referenceLines: [highlightSettings.rsiBuy, highlightSettings.rsiSell],
-            color: 'purple',
-            formatValue: v => v.toFixed(0),
-            padLeft: sharedChartPadLeft,
-            highlightRanges,
-          });
-
-          renderIndicatorChart('price-ma-chart', data.priceVsMaPct, data.timestamps, rangeKey, {
-            color: 'teal',
-            overlays: pmaOverlays,
-            formatValue: pmaFormat,
-            padLeft: sharedChartPadLeft,
-            highlightRanges,
-          });
-          lastChartTimestamps = data.timestamps;
-          lastHighlightRanges = highlightRanges;
-          renderFearGreedChart(rangeKey, highlightRanges, data.timestamps);
+          // Kauf-/Verkaufssignal-Zeiträume, Bänder und alle Charts: eine gemeinsame
+          // Stelle, damit ein Neu-Rendern nach Einstellungsänderung identisch aussieht.
+          rerenderHighlightCharts();
 
           const lastRsi = lastValue(data.rsi);
           document.getElementById('rsi-chart-current').textContent =
@@ -746,8 +920,11 @@
             `${fg.score.toFixed(1)} (${fg.rating})`;
 
           fearGreedHistory = fg.history || [];
-          if (lastChartTimestamps) {
-            renderFearGreedChart(currentRange, lastHighlightRanges, lastChartTimestamps);
+          smartDumbHistory = (data.smartDumbMoney || {}).history || [];
+          // Die Historie kann nach dem Kurschart eintreffen. Dann wurden die Balken
+          // ohne Fear&Greed-Werte (= gar nicht) berechnet -> komplett neu rendern.
+          if (lastChartData) {
+            rerenderHighlightCharts();
           }
 
           document.getElementById('selected-instrument').textContent =
@@ -822,15 +999,31 @@
         updateHighlightSetting('usePma', event.target.checked);
       });
 
+      document.getElementById('toggle-highlight-smartdumb').addEventListener('change', (event) => {
+        updateHighlightSetting('useSmartDumb', event.target.checked);
+      });
+
       [
         ['highlight-feargreed-buy', 'fearGreedBuy'],
         ['highlight-feargreed-sell', 'fearGreedSell'],
         ['highlight-rsi-buy', 'rsiBuy'],
         ['highlight-rsi-sell', 'rsiSell'],
         ['highlight-pma-multiplier', 'pmaStdMultiplier'],
+        ['highlight-ma-window', 'maDeviationWindow'],
+        ['highlight-smartdumb-buy', 'smartDumbBuy'],
+        ['highlight-smartdumb-sell', 'smartDumbSell'],
       ].forEach(([elementId, settingName]) => bindNumberSetting(elementId, settingName));
 
-      document.getElementById('reset-highlight-settings').addEventListener('click', resetHighlightSettings);
+      document.getElementById('preset-select').addEventListener('change', (event) => {
+        const name = event.target.value;
+        if (name === CUSTOM_PRESET_LABEL) return;
+        applyHighlightSettings(
+          name === DEFAULT_PRESET_NAME ? DEFAULT_HIGHLIGHT_SETTINGS : highlightPresets[name]
+        );
+      });
+
+      document.getElementById('save-preset').addEventListener('click', saveCurrentAsPreset);
+      document.getElementById('delete-preset').addEventListener('click', deleteSelectedPreset);
 
       const FAVORITES_KEY = 'aktienanalyse-favorites';
 
@@ -849,7 +1042,7 @@
       function selectSymbol(symbol) {
         currentSymbol = symbol;
         localStorage.setItem(LAST_SYMBOL_KEY, symbol);
-        loadHighlightSettings(currentSymbol);
+        // Einstellungen gelten global und bleiben beim Symbolwechsel unverändert.
         loadData(currentSymbol);
         loadChart(currentSymbol, currentRange);
         updateFavoriteStar();
@@ -954,7 +1147,8 @@
 
       renderFavorites();
       updateFavoriteStar();
-      loadHighlightSettings(currentSymbol);
+      migrateLegacySettings();
+      loadHighlightSettings();
       loadData(currentSymbol);
       loadChart(currentSymbol, currentRange);
     </script>
