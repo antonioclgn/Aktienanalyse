@@ -494,43 +494,53 @@
         return result;
       }
 
+      // Zustand JEDES Indikators einzeln an einem Zeitpunkt: 'green' (Kaufbedingung
+      // erfüllt), 'red' (Verkaufsbedingung erfüllt) oder null. null steht auch für
+      // "deaktiviert" oder "keine Daten" — beides zählt nicht als Signal.
+      function indicatorSignalsAt(i, timestamps, rsi, pma, pmaUpper, pmaLower) {
+        const fg = fearGreedScoreAt(timestamps[i]);
+        const smartDumb = smartDumbAt(timestamps[i]);
+        const classify = (buy, sell) => (buy ? 'green' : (sell ? 'red' : null));
+        const pmaReady = pma && pma[i] != null
+          && pmaUpper && pmaUpper[i] != null && pmaLower && pmaLower[i] != null;
+        return {
+          feargreed: highlightSettings.useFearGreed && fg != null
+            ? classify(fg <= highlightSettings.fearGreedBuy, fg >= highlightSettings.fearGreedSell)
+            : null,
+          // Profis long und Kleinanleger short -> Kaufsignal, umgekehrt Verkaufssignal.
+          smartdumb: highlightSettings.useSmartDumb && smartDumb != null
+            ? classify(
+              smartDumb.spread >= highlightSettings.smartDumbBuy,
+              smartDumb.spread <= highlightSettings.smartDumbSell)
+            : null,
+          rsi: highlightSettings.useRsi && rsi && rsi[i] != null
+            ? classify(rsi[i] <= highlightSettings.rsiBuy, rsi[i] >= highlightSettings.rsiSell)
+            : null,
+          pma: highlightSettings.usePma && pmaReady
+            ? classify(pma[i] < pmaLower[i], pma[i] > pmaUpper[i])
+            : null,
+        };
+      }
+
+      const ENABLED_SETTING_BY_INDICATOR = {
+        feargreed: 'useFearGreed',
+        smartdumb: 'useSmartDumb',
+        rsi: 'useRsi',
+        pma: 'usePma',
+      };
+
       // Findet zusammenhängende Zeiträume, in denen gleichzeitig gilt:
       // grün = alle aktivierten Indikatoren zeigen ein Kaufsignal
       // rot  = alle aktivierten Indikatoren zeigen ein Verkaufssignal
       function computeHighlightRanges(timestamps, rsi, pma, pmaUpper, pmaLower) {
-        const types = timestamps.map((t, i) => {
-          const fg = fearGreedScoreAt(t);
-          const smartDumb = smartDumbAt(t);
-          if ((highlightSettings.useFearGreed && fg == null)
-            || (highlightSettings.useRsi && rsi[i] == null)
-            || (highlightSettings.useSmartDumb && smartDumb == null)
-            || (highlightSettings.usePma
-              && (pma[i] == null || pmaUpper[i] == null || pmaLower[i] == null))) {
-            return null;
-          }
-          const buyConditions = [];
-          const sellConditions = [];
-          if (highlightSettings.useFearGreed) {
-            buyConditions.push(fg <= highlightSettings.fearGreedBuy);
-            sellConditions.push(fg >= highlightSettings.fearGreedSell);
-          }
-          if (highlightSettings.useRsi) {
-            buyConditions.push(rsi[i] <= highlightSettings.rsiBuy);
-            sellConditions.push(rsi[i] >= highlightSettings.rsiSell);
-          }
-          if (highlightSettings.usePma) {
-            buyConditions.push(pma[i] < pmaLower[i]);
-            sellConditions.push(pma[i] > pmaUpper[i]);
-          }
-          // Profis long und Kleinanleger short -> Kaufsignal, umgekehrt Verkaufssignal.
-          if (highlightSettings.useSmartDumb) {
-            buyConditions.push(smartDumb.spread >= highlightSettings.smartDumbBuy);
-            sellConditions.push(smartDumb.spread <= highlightSettings.smartDumbSell);
-          }
+        const enabled = Object.keys(ENABLED_SETTING_BY_INDICATOR)
+          .filter(key => highlightSettings[ENABLED_SETTING_BY_INDICATOR[key]]);
 
-          if (!buyConditions.length) return null;
-          if (buyConditions.every(Boolean)) return 'green';
-          if (sellConditions.every(Boolean)) return 'red';
+        const types = timestamps.map((t, i) => {
+          if (!enabled.length) return null;
+          const signals = indicatorSignalsAt(i, timestamps, rsi, pma, pmaUpper, pmaLower);
+          if (enabled.every(key => signals[key] === 'green')) return 'green';
+          if (enabled.every(key => signals[key] === 'red')) return 'red';
           return null;
         });
 
@@ -619,6 +629,27 @@
 
       const pmaFormat = v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
 
+      // Am rechten Rand ist ein einzelner (schmaler) Balken leicht zu übersehen.
+      // Deshalb wird der aktuelle Wert jedes Indikators eingefärbt, sobald DIESER
+      // Indikator gerade ausschlägt — bewusst einzeln und nicht nach dem gemeinsamen
+      // Balken, damit sofort sichtbar ist, welcher Indikator das Signal verhindert.
+      const CURRENT_VALUE_IDS = {
+        feargreed: 'feargreed-current',
+        smartdumb: 'smartdumb-chart-current',
+        rsi: 'rsi-chart-current',
+        pma: 'price-ma-chart-current',
+      };
+
+      function applyCurrentSignalColors(signals) {
+        Object.keys(CURRENT_VALUE_IDS).forEach(key => {
+          const el = document.getElementById(CURRENT_VALUE_IDS[key]);
+          if (!el) return;
+          const style = signals ? HIGHLIGHT_STYLES[signals[key]] : null;
+          el.style.color = style ? style.color : '';
+          el.style.fontWeight = style ? '700' : '';
+        });
+      }
+
       function rerenderHighlightCharts() {
         const data = lastChartData;
         if (!data) return;
@@ -658,6 +689,11 @@
         lastChartTimestamps = data.timestamps;
         lastHighlightRanges = highlightRanges;
         renderFearGreedChart(currentRange, highlightRanges, data.timestamps);
+
+        const lastIndex = data.timestamps.length - 1;
+        applyCurrentSignalColors(lastIndex >= 0
+          ? indicatorSignalsAt(lastIndex, data.timestamps, data.rsi, data.priceVsMaPct, pmaUpper, pmaLower)
+          : null);
       }
 
       function lastValue(series) {
