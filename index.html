@@ -66,6 +66,10 @@
       let currentSymbol = localStorage.getItem(LAST_SYMBOL_KEY) || 'SXR8.DE';
       let currentRange = '1y';
       let sharedChartPadLeft = 30;
+      // Zeitstempel des zuletzt geladenen Kurscharts, damit der Fear&Greed-Chart
+      // (der aus /api/data getrennt geladen wird) sich auf dieselbe X-Achse legen kann.
+      let lastChartTimestamps = null;
+      let lastHighlightRanges = [];
 
       function formatTick(date, rangeKey) {
         switch (rangeKey) {
@@ -98,6 +102,28 @@
         return Math.max(minPadding, widest + 8);
       }
 
+      // Volle Deckkraft (alle 3 Indikatoren) vs. blasser (nur 2 von 3).
+      const HIGHLIGHT_STYLES = {
+        green: { color: '#22c55e', opacity: 0.18 },
+        red: { color: '#ef4444', opacity: 0.18 },
+        'green-weak': { color: '#22c55e', opacity: 0.07 },
+        'red-weak': { color: '#ef4444', opacity: 0.07 },
+      };
+
+      function renderHighlightRects(svg, ns, rects) {
+        rects.forEach(r => {
+          const style = HIGHLIGHT_STYLES[r.type] || { color: '#999', opacity: 0.12 };
+          const rect = document.createElementNS(ns, 'rect');
+          rect.setAttribute('x', Math.min(r.x1, r.x2));
+          rect.setAttribute('y', r.y);
+          rect.setAttribute('width', Math.max(Math.abs(r.x2 - r.x1), 1));
+          rect.setAttribute('height', r.height);
+          rect.setAttribute('fill', style.color);
+          rect.setAttribute('opacity', String(style.opacity));
+          svg.appendChild(rect);
+        });
+      }
+
       function renderYAxisLabels(svg, padLeft, padTop, plotHeight, min, max, formatValue) {
         const ns = 'http://www.w3.org/2000/svg';
         [[max, padTop], [min, padTop + plotHeight]].forEach(([value, y]) => {
@@ -112,7 +138,7 @@
         });
       }
 
-      function renderChart(closes, timestamps, rangeKey, movingAverage, sharedPadLeft) {
+      function renderChart(closes, timestamps, rangeKey, movingAverage, sharedPadLeft, highlightRanges) {
         const svg = document.getElementById('chart');
         svg.innerHTML = '';
         if (!closes || closes.length < 2) return;
@@ -134,6 +160,12 @@
         const points = closes.map((v, i) => `${xAt(i)},${yAt(v)}`).join(' ');
 
         const ns = 'http://www.w3.org/2000/svg';
+
+        if (highlightRanges && highlightRanges.length) {
+          renderHighlightRects(svg, ns, highlightRanges.map(r => ({
+            type: r.type, x1: xAt(r.startIndex), x2: xAt(r.endIndex), y: padTop, height: plotHeight,
+          })));
+        }
 
         const yAxis = document.createElementNS(ns, 'line');
         yAxis.setAttribute('x1', padLeft);
@@ -192,31 +224,80 @@
 
       let fearGreedHistory = [];
 
-      // Dieselben Fenstergrößen wie beim Preis-Chart, damit die Zeitachsen
-      // aller Charts übereinander ausgerichtet sind — auch wenn CNN für 5/10 Jahre
-      // gar nicht so weit zurückreicht (dann bleibt der Anfang leer).
-      const RANGE_DAYS = {
-        '1d': 1,
-        '5d': 5,
-        '1mo': 30,
-        '1y': 365,
-        '5y': 5 * 365,
-        '10y': 10 * 365,
-      };
+      // Letzten bekannten Fear&Greed-Wert zu einem Zeitpunkt finden (fearGreedHistory
+      // ist aufsteigend nach Zeit sortiert -> Vorwärts-Auffüllen per Binärsuche).
+      function fearGreedScoreAt(ts) {
+        let lo = 0, hi = fearGreedHistory.length - 1, result = null;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (fearGreedHistory[mid].t <= ts) {
+            result = fearGreedHistory[mid].score;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        return result;
+      }
 
-      function renderFearGreedChart(rangeKey) {
-        if (!fearGreedHistory.length) return;
-        const windowDays = RANGE_DAYS[rangeKey] || 365;
-        const xMax = fearGreedHistory[fearGreedHistory.length - 1].t;
-        const xMin = xMax - windowDays * 86400;
-        const slice = fearGreedHistory.filter(p => p.t >= xMin);
+      // Findet zusammenhängende Zeiträume, in denen gleichzeitig gilt:
+      // grün = Fear&Greed <= 25 (Extreme Fear), RSI < 30, Deviation < unteres Band (Kaufsignal)
+      // rot  = Fear&Greed >= 75 (Extreme Greed), RSI > 70, Deviation > oberes Band (Verkaufssignal)
+      function computeHighlightRanges(timestamps, rsi, pma, pmaUpper, pmaLower) {
+        const types = timestamps.map((t, i) => {
+          const fg = fearGreedScoreAt(t);
+          if (fg == null || rsi[i] == null || pma[i] == null || pmaUpper[i] == null || pmaLower[i] == null) {
+            return null;
+          }
+          // Zählen, wie viele der 3 Bedingungen je Richtung erfüllt sind:
+          // 3 = starkes Signal (voll), 2 = schwaches Signal (blass), <2 = keins.
+          const buy = (fg <= 25) + (rsi[i] < 30) + (pma[i] < pmaLower[i]);
+          const sell = (fg >= 75) + (rsi[i] > 70) + (pma[i] > pmaUpper[i]);
+          if (buy === 3) return 'green';
+          if (sell === 3) return 'red';
+          if (buy === 2) return 'green-weak';
+          if (sell === 2) return 'red-weak';
+          return null;
+        });
+
+        const ranges = [];
+        let start = 0, current = types.length ? types[0] : null;
+        for (let i = 1; i <= types.length; i++) {
+          const t = i < types.length ? types[i] : null;
+          if (t !== current) {
+            if (current != null) {
+              ranges.push({
+                type: current,
+                startIndex: start,
+                endIndex: i - 1,
+                startTs: timestamps[start],
+                endTs: timestamps[i - 1],
+              });
+            }
+            current = t;
+            start = i;
+          }
+        }
+        return ranges;
+      }
+
+      function renderFearGreedChart(rangeKey, highlightRanges, timestamps) {
+        if (!fearGreedHistory.length || !timestamps || !timestamps.length) return;
+        // Fear&Greed auf EXAKT dieselben X-Positionen wie die anderen Charts legen:
+        // für jeden Kurs-Zeitpunkt den zuletzt bekannten (täglichen) Fear&Greed-Wert einsetzen.
+        // Dadurch teilt dieser Chart dieselbe (index-basierte) Achse und beginnt/endet
+        // bündig mit Kurs, RSI und Moving Average Deviation.
+        const series = timestamps.map(t => fearGreedScoreAt(t));
 
         renderIndicatorChart(
           'feargreed-chart',
-          slice.map(p => p.score),
-          slice.map(p => p.t),
+          series,
+          timestamps,
           rangeKey,
-          { fixedMin: 0, fixedMax: 100, referenceLines: [25, 75], color: 'goldenrod', xMin, xMax, formatValue: v => v.toFixed(0), padLeft: sharedChartPadLeft }
+          {
+            fixedMin: 0, fixedMax: 100, referenceLines: [25, 75], color: 'goldenrod',
+            formatValue: v => v.toFixed(0), padLeft: sharedChartPadLeft, highlightRanges,
+          }
         );
       }
 
@@ -291,6 +372,17 @@
         const yAt = v => padTop + plotHeight - ((v - min) / range) * plotHeight;
 
         const ns = 'http://www.w3.org/2000/svg';
+
+        if (options.highlightRanges && options.highlightRanges.length) {
+          const xAtTime = ts => padLeft + ((ts - options.xMin) / xRange) * plotWidth;
+          renderHighlightRects(svg, ns, options.highlightRanges.map(r => ({
+            type: r.type,
+            x1: useTimeScale ? xAtTime(r.startTs) : xAt(r.startIndex),
+            x2: useTimeScale ? xAtTime(r.endTs) : xAt(r.endIndex),
+            y: padTop,
+            height: plotHeight,
+          })));
+        }
 
         const yAxis = document.createElementNS(ns, 'line');
         yAxis.setAttribute('x1', padLeft);
@@ -402,12 +494,6 @@
           const rsiPadLeft = computeLeftPadding(0, 100, v => v.toFixed(0), 8, 30);
           sharedChartPadLeft = Math.max(mainPadLeft, pmaPadLeft, rsiPadLeft);
 
-          renderChart(data.closes, data.timestamps, rangeKey, data.movingAverage, sharedChartPadLeft);
-          renderIndicatorChart('rsi-chart', data.rsi, data.timestamps, rangeKey, {
-            fixedMin: 0, fixedMax: 100, referenceLines: [30, 70], color: 'purple',
-            formatValue: v => v.toFixed(0),
-            padLeft: sharedChartPadLeft,
-          });
           const pmaTrend = computeTrendLine(data.priceVsMaPct);
           const pmaAvg = data.priceVsMaPctAvg;
           const pmaStd = data.priceVsMaPctStd;
@@ -419,13 +505,30 @@
           if (pmaUpper) pmaOverlays.push({ series: pmaUpper, color: '#ccc' });
           if (pmaLower) pmaOverlays.push({ series: pmaLower, color: '#ccc' });
 
+          // Kauf-/Verkaufssignal-Zeiträume: Fear&Greed extrem + RSI extrem + Deviation
+          // außerhalb der Std.-Abw.-Bänder, gleichzeitig -> grün/rot über alle Charts markieren.
+          const highlightRanges = (pmaUpper && pmaLower)
+            ? computeHighlightRanges(data.timestamps, data.rsi, data.priceVsMaPct, pmaUpper, pmaLower)
+            : [];
+
+          renderChart(data.closes, data.timestamps, rangeKey, data.movingAverage, sharedChartPadLeft, highlightRanges);
+          renderIndicatorChart('rsi-chart', data.rsi, data.timestamps, rangeKey, {
+            fixedMin: 0, fixedMax: 100, referenceLines: [30, 70], color: 'purple',
+            formatValue: v => v.toFixed(0),
+            padLeft: sharedChartPadLeft,
+            highlightRanges,
+          });
+
           renderIndicatorChart('price-ma-chart', data.priceVsMaPct, data.timestamps, rangeKey, {
             color: 'teal',
             overlays: pmaOverlays,
             formatValue: pmaFormat,
             padLeft: sharedChartPadLeft,
+            highlightRanges,
           });
-          renderFearGreedChart(rangeKey);
+          lastChartTimestamps = data.timestamps;
+          lastHighlightRanges = highlightRanges;
+          renderFearGreedChart(rangeKey, highlightRanges, data.timestamps);
 
           const lastRsi = lastValue(data.rsi);
           document.getElementById('rsi-chart-current').textContent =
@@ -470,7 +573,9 @@
             `${fg.score.toFixed(1)} (${fg.rating})`;
 
           fearGreedHistory = fg.history || [];
-          renderFearGreedChart(currentRange);
+          if (lastChartTimestamps) {
+            renderFearGreedChart(currentRange, lastHighlightRanges, lastChartTimestamps);
+          }
 
           document.getElementById('selected-instrument').textContent =
             `${data.market.name} (${data.market.symbol})`;

@@ -4,7 +4,9 @@
       "Bash(python -c ' *)",
       "Bash(curl -s \"http://127.0.0.1:8000/api/search?q=Bitcoin\")",
       "Bash(curl -s \"http://127.0.0.1:8000/api/history?symbol=BTC-USD&range=1y\")",
-      "Bash(curl -s \"http://127.0.0.1:8000/api/history?symbol=BTC-USD&range=1y\" -o \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\205896b7-b757-4cff-a0b8-7b5598d06e2d\\\\scratchpad\\\\btc.json\")"
+      "Bash(curl -s \"http://127.0.0.1:8000/api/history?symbol=BTC-USD&range=1y\" -o \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\205896b7-b757-4cff-a0b8-7b5598d06e2d\\\\scratchpad\\\\btc.json\")",
+      "Bash(curl -s \"http://127.0.0.1:8000/api/history?symbol=VWCE.DE&range=10y\")",
+      "Bash(curl -s \"http://127.0.0.1:8000/api/history?symbol=VWCE.DE&range=5d\")"
     ]
   }
 }

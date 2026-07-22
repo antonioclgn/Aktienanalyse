@@ -17,12 +17,13 @@ PORT = 8000
 CACHE_TTL_SECONDS = 30
 
 CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-# CNNs eigene API liefert selbst mit explizitem, weiter zurückliegendem Startdatum
-# keine Daten vor diesem Zeitpunkt (getestet: Anfragen mit früherem Datum -> HTTP 500).
-CNN_FEAR_GREED_EARLIEST = "2020-07-14"
-# Für die Zeit davor (bis 2011) liegt eine mitgelieferte, einmalig heruntergeladene
-# Historie bei (siehe feargreed_history_2011_2020.csv), da CNNs Live-API nicht weiter zurückreicht.
-FEARGREED_BUNDLED_CSV = BASE_DIR / "feargreed_history_2011_2020.csv"
+# CNNs eigene API liefert ab 14.07.2020 (ihre technische Untergrenze) bis zum 21.01.2021
+# nur Platzhalterdaten (konstant 50.0 mit vereinzelten unrealistischen Ausreißern nahe 0
+# -> geprüft und mit einer unabhängigen Quelle verglichen). Deshalb erst ab hier vertrauen.
+CNN_FEAR_GREED_EARLIEST = "2021-01-22"
+# Für die Zeit davor (bis 2011, inkl. der o.g. unzuverlässigen CNN-Phase) liegt eine
+# mitgelieferte, einmalig heruntergeladene Historie bei (feargreed_history_2011_2021.csv).
+FEARGREED_BUNDLED_CSV = BASE_DIR / "feargreed_history_2011_2021.csv"
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range}&interval={interval}"
 YAHOO_CHART_URL_PERIOD = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
