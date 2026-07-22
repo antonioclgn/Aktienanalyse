@@ -29,12 +29,15 @@
           <button type="button" data-range="5y">5 Jahre</button>
           <button type="button" data-range="10y">10 Jahre</button>
         </div>
-        <span id="range-change"></span>
+        <div style="text-align: right;">
+          <div id="range-change"></div>
+          <div id="current-price" style="font-size: 11px; color: #666;"></div>
+        </div>
       </div>
       <svg id="chart" viewBox="0 0 600 220" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
 
       <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
-        <span>Fear &amp; Greed Index (Markt, ca. 1 Jahr)</span>
+        <span>Fear &amp; Greed Index</span>
         <span id="feargreed-current"></span>
       </div>
       <svg id="feargreed-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
@@ -46,7 +49,7 @@
       <svg id="rsi-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
 
       <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
-        <span>Price vs. 200-Tage-Durchschnitt (%)</span>
+        <span>Moving Average Deviation</span>
         <span id="price-ma-chart-current"></span>
       </div>
       <svg id="price-ma-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
@@ -59,8 +62,10 @@
   </div>
 
     <script>
-      let currentSymbol = 'SXR8.DE';
+      const LAST_SYMBOL_KEY = 'aktienanalyse-last-symbol';
+      let currentSymbol = localStorage.getItem(LAST_SYMBOL_KEY) || 'SXR8.DE';
       let currentRange = '1y';
+      let sharedChartPadLeft = 30;
 
       function formatTick(date, rangeKey) {
         switch (rangeKey) {
@@ -79,19 +84,49 @@
         }
       }
 
-      function renderChart(closes, timestamps, rangeKey, movingAverage) {
+      // Grobe Schätzung der Textbreite (kein exaktes Messen nötig, nur genug
+      // Platz reservieren, damit lange Zahlen wie Bitcoin-Kurse nicht am linken Rand abgeschnitten werden).
+      function estimateLabelWidth(text, fontSize) {
+        return text.length * fontSize * 0.62;
+      }
+
+      function computeLeftPadding(min, max, formatValue, fontSize, minPadding) {
+        const widest = Math.max(
+          estimateLabelWidth(formatValue(min), fontSize),
+          estimateLabelWidth(formatValue(max), fontSize)
+        );
+        return Math.max(minPadding, widest + 8);
+      }
+
+      function renderYAxisLabels(svg, padLeft, padTop, plotHeight, min, max, formatValue) {
+        const ns = 'http://www.w3.org/2000/svg';
+        [[max, padTop], [min, padTop + plotHeight]].forEach(([value, y]) => {
+          const label = document.createElementNS(ns, 'text');
+          label.setAttribute('x', padLeft - 4);
+          label.setAttribute('y', y + 3);
+          label.setAttribute('font-size', '8');
+          label.setAttribute('fill', '#aaa');
+          label.setAttribute('text-anchor', 'end');
+          label.textContent = formatValue(value);
+          svg.appendChild(label);
+        });
+      }
+
+      function renderChart(closes, timestamps, rangeKey, movingAverage, sharedPadLeft) {
         const svg = document.getElementById('chart');
         svg.innerHTML = '';
         if (!closes || closes.length < 2) return;
 
         const width = 600, height = 220;
-        const padLeft = 30, padRight = 10, padTop = 10, padBottom = 30;
-        const plotWidth = width - padLeft - padRight;
-        const plotHeight = height - padTop - padBottom;
+        const padRight = 10, padTop = 10, padBottom = 30;
 
         const min = Math.min(...closes);
         const max = Math.max(...closes);
         const range = (max - min) || 1;
+        const formatValue = v => v.toFixed(2);
+        const padLeft = sharedPadLeft != null ? sharedPadLeft : computeLeftPadding(min, max, formatValue, 8, 30);
+        const plotWidth = width - padLeft - padRight;
+        const plotHeight = height - padTop - padBottom;
 
         const xAt = i => padLeft + (i / (closes.length - 1)) * plotWidth;
         const yAt = v => padTop + plotHeight - ((v - min) / range) * plotHeight;
@@ -115,6 +150,8 @@
         xAxis.setAttribute('y2', padTop + plotHeight);
         xAxis.setAttribute('stroke', 'black');
         svg.appendChild(xAxis);
+
+        renderYAxisLabels(svg, padLeft, padTop, plotHeight, min, max, formatValue);
 
         const polyline = document.createElementNS(ns, 'polyline');
         polyline.setAttribute('points', points);
@@ -179,7 +216,7 @@
           slice.map(p => p.score),
           slice.map(p => p.t),
           rangeKey,
-          { fixedMin: 0, fixedMax: 100, referenceLines: [25, 75], color: 'goldenrod', xMin, xMax }
+          { fixedMin: 0, fixedMax: 100, referenceLines: [25, 75], color: 'goldenrod', xMin, xMax, formatValue: v => v.toFixed(0), padLeft: sharedChartPadLeft }
         );
       }
 
@@ -205,22 +242,42 @@
         return null;
       }
 
+      function renderNoDataMessage(svg, width, height) {
+        const ns = 'http://www.w3.org/2000/svg';
+        const label = document.createElementNS(ns, 'text');
+        label.setAttribute('x', width / 2);
+        label.setAttribute('y', height / 2);
+        label.setAttribute('font-size', '11');
+        label.setAttribute('fill', '#999');
+        label.setAttribute('text-anchor', 'middle');
+        label.textContent = 'Nicht genug Historie verfügbar';
+        svg.appendChild(label);
+      }
+
       function renderIndicatorChart(svgId, series, timestamps, rangeKey, options = {}) {
         const svg = document.getElementById(svgId);
         svg.innerHTML = '';
-        if (!series || series.length < 2) return;
+        const width = 600, height = 90;
+        if (!series || series.length < 2) {
+          renderNoDataMessage(svg, width, height);
+          return;
+        }
 
         const values = series.filter(v => v != null);
-        if (values.length < 2) return;
+        if (values.length < 2) {
+          renderNoDataMessage(svg, width, height);
+          return;
+        }
 
-        const width = 600, height = 90;
-        const padLeft = 30, padRight = 10, padTop = 6, padBottom = 18;
-        const plotWidth = width - padLeft - padRight;
-        const plotHeight = height - padTop - padBottom;
+        const padRight = 10, padTop = 6, padBottom = 18;
 
         const min = options.fixedMin != null ? options.fixedMin : Math.min(...values);
         const max = options.fixedMax != null ? options.fixedMax : Math.max(...values);
         const range = (max - min) || 1;
+        const formatValue = options.formatValue || (v => v.toFixed(1));
+        const padLeft = options.padLeft != null ? options.padLeft : computeLeftPadding(min, max, formatValue, 8, 30);
+        const plotWidth = width - padLeft - padRight;
+        const plotHeight = height - padTop - padBottom;
 
         // Standard: Punkte gleichmäßig nach Index verteilt (keine Lücken am Wochenende).
         // Nur wenn xMin/xMax explizit übergeben werden (z.B. Fear&Greed-Chart, der
@@ -251,9 +308,12 @@
         xAxis.setAttribute('stroke', 'black');
         svg.appendChild(xAxis);
 
+        renderYAxisLabels(svg, padLeft, padTop, plotHeight, min, max, formatValue);
+
         (options.referenceLines || []).forEach(ref => {
           const refValue = typeof ref === 'object' ? ref.value : ref;
           const stroke = typeof ref === 'object' && ref.stroke ? ref.stroke : '#ccc';
+          const dashed = !(typeof ref === 'object' && ref.dashed === false);
           if (refValue < min || refValue > max) return;
           const line = document.createElementNS(ns, 'line');
           line.setAttribute('x1', padLeft);
@@ -261,7 +321,8 @@
           line.setAttribute('x2', padLeft + plotWidth);
           line.setAttribute('y2', yAt(refValue));
           line.setAttribute('stroke', stroke);
-          line.setAttribute('stroke-dasharray', '4,3');
+          line.setAttribute('stroke-width', '1.5');
+          if (dashed) line.setAttribute('stroke-dasharray', '5,3');
           svg.appendChild(line);
         });
 
@@ -277,21 +338,20 @@
         polyline.setAttribute('stroke-width', '2');
         svg.appendChild(polyline);
 
-        if (options.trendSeries) {
-          const trendPoints = options.trendSeries
+        (options.overlays || []).forEach(overlay => {
+          const overlayPoints = overlay.series
             .map((v, i) => (v != null ? `${xAt(i)},${yAt(v)}` : null))
             .filter(p => p !== null)
             .join(' ');
-          if (trendPoints) {
-            const trendLine = document.createElementNS(ns, 'polyline');
-            trendLine.setAttribute('points', trendPoints);
-            trendLine.setAttribute('fill', 'none');
-            trendLine.setAttribute('stroke', options.trendColor || options.color || 'steelblue');
-            trendLine.setAttribute('stroke-width', '1.5');
-            trendLine.setAttribute('stroke-dasharray', '5,3');
-            svg.appendChild(trendLine);
-          }
-        }
+          if (!overlayPoints) return;
+          const overlayLine = document.createElementNS(ns, 'polyline');
+          overlayLine.setAttribute('points', overlayPoints);
+          overlayLine.setAttribute('fill', 'none');
+          overlayLine.setAttribute('stroke', overlay.color || '#ccc');
+          overlayLine.setAttribute('stroke-width', '1.5');
+          overlayLine.setAttribute('stroke-dasharray', '5,3');
+          svg.appendChild(overlayLine);
+        });
 
         if (timestamps && timestamps.length === series.length) {
           if (useTimeScale) {
@@ -327,16 +387,43 @@
           const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}&range=${encodeURIComponent(rangeKey)}`);
           const data = await res.json();
           if (data.error) throw new Error(data.error);
-          renderChart(data.closes, data.timestamps, rangeKey, data.movingAverage);
+
+          // Gemeinsamer linker Rand für alle Charts auf der Seite, damit sie trotz
+          // unterschiedlich breiter Y-Achsen-Zahlen (Kurs, RSI, %) an derselben Stelle beginnen.
+          const priceValues = (data.closes || []).filter(v => v != null);
+          const mainPadLeft = priceValues.length
+            ? computeLeftPadding(Math.min(...priceValues), Math.max(...priceValues), v => v.toFixed(2), 8, 30)
+            : 30;
+          const pmaValues = (data.priceVsMaPct || []).filter(v => v != null);
+          const pmaFormat = v => `${v > 0 ? '+' : ''}${v.toFixed(1)}%`;
+          const pmaPadLeft = pmaValues.length
+            ? computeLeftPadding(Math.min(...pmaValues), Math.max(...pmaValues), pmaFormat, 8, 30)
+            : 30;
+          const rsiPadLeft = computeLeftPadding(0, 100, v => v.toFixed(0), 8, 30);
+          sharedChartPadLeft = Math.max(mainPadLeft, pmaPadLeft, rsiPadLeft);
+
+          renderChart(data.closes, data.timestamps, rangeKey, data.movingAverage, sharedChartPadLeft);
           renderIndicatorChart('rsi-chart', data.rsi, data.timestamps, rangeKey, {
             fixedMin: 0, fixedMax: 100, referenceLines: [30, 70], color: 'purple',
+            formatValue: v => v.toFixed(0),
+            padLeft: sharedChartPadLeft,
           });
           const pmaTrend = computeTrendLine(data.priceVsMaPct);
+          const pmaAvg = data.priceVsMaPctAvg;
+          const pmaStd = data.priceVsMaPctStd;
+          // Ober-/Unterband folgen der Trendlinie im konstanten Abstand von 1 Standardabweichung
+          // (statt starrer horizontaler Linien) — wie bei Bollinger Bändern um eine Moving Average.
+          const pmaUpper = pmaStd != null ? pmaTrend.map(v => (v != null ? v + pmaStd : null)) : null;
+          const pmaLower = pmaStd != null ? pmaTrend.map(v => (v != null ? v - pmaStd : null)) : null;
+          const pmaOverlays = [{ series: pmaTrend, color: '#ccc' }];
+          if (pmaUpper) pmaOverlays.push({ series: pmaUpper, color: '#ccc' });
+          if (pmaLower) pmaOverlays.push({ series: pmaLower, color: '#ccc' });
+
           renderIndicatorChart('price-ma-chart', data.priceVsMaPct, data.timestamps, rangeKey, {
-            referenceLines: [{ value: 0, stroke: '#ddd' }],
             color: 'teal',
-            trendSeries: pmaTrend,
-            trendColor: '#888',
+            overlays: pmaOverlays,
+            formatValue: pmaFormat,
+            padLeft: sharedChartPadLeft,
           });
           renderFearGreedChart(rangeKey);
 
@@ -362,8 +449,12 @@
           } else {
             changeEl.textContent = 'n/a';
           }
+
+          document.getElementById('current-price').textContent =
+            closes && closes.length ? closes[closes.length - 1].toFixed(2) : '';
         } catch (err) {
           document.getElementById('range-change').textContent = 'Fehler';
+          document.getElementById('current-price').textContent = '';
           console.error(err);
         }
       }
@@ -457,6 +548,7 @@
 
       function selectSymbol(symbol) {
         currentSymbol = symbol;
+        localStorage.setItem(LAST_SYMBOL_KEY, symbol);
         loadData(currentSymbol);
         loadChart(currentSymbol, currentRange);
         updateFavoriteStar();
@@ -493,6 +585,7 @@
           link.title = fav.symbol;
           link.style.cursor = 'pointer';
           link.style.fontSize = '13px';
+          link.style.color = 'black';
           link.style.overflow = 'hidden';
           link.style.textOverflow = 'ellipsis';
           link.style.whiteSpace = 'nowrap';

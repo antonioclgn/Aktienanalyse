@@ -268,6 +268,10 @@ def get_history(symbol, range_key):
     price_vs_ma_pct_display = price_vs_ma_pct[start_index:]
     avg_values = [v for v in price_vs_ma_pct_display if v is not None]
     price_vs_ma_pct_avg = sum(avg_values) / len(avg_values) if avg_values else None
+    price_vs_ma_pct_std = None
+    if price_vs_ma_pct_avg is not None and len(avg_values) >= 2:
+        variance = sum((v - price_vs_ma_pct_avg) ** 2 for v in avg_values) / (len(avg_values) - 1)
+        price_vs_ma_pct_std = variance ** 0.5
 
     return {
         "timestamps": all_timestamps[start_index:],
@@ -276,6 +280,7 @@ def get_history(symbol, range_key):
         "rsi": rsi_series[start_index:],
         "priceVsMaPct": price_vs_ma_pct_display,
         "priceVsMaPctAvg": price_vs_ma_pct_avg,
+        "priceVsMaPctStd": price_vs_ma_pct_std,
     }
 
 
