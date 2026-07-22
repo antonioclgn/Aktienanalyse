@@ -53,14 +53,20 @@
         <span id="price-ma-chart-current"></span>
       </div>
       <svg id="price-ma-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
+      <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
+        <span>Score-Punktesumme</span>
+        <span id="standardized-score-main-current"></span>
+      </div>
+      <svg id="standardized-score-chart" viewBox="0 0 600 240" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
     </div>
 
-    <aside style="width: 28vw; min-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column;">
+    <aside style="width: 48vw; min-width: 650px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column;">
       <h2 style="font-size: 14px; margin-top: 0;">Favoriten</h2>
       <ul id="favorites-list" style="list-style: none; padding: 0; margin: 0;"></ul>
-      <section style="margin-top: auto; padding-top: 10px; border-top: 1px solid #ccc; min-height: 25vh; font-size: 12px;">
-        <h2 style="font-size: 14px; margin: 0 0 8px;">Balken-Einstellungen</h2>
-        <div style="color: #666; margin-bottom: 8px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen.</div>
+      <div style="margin-top: auto; min-height: 42vh; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 14px; align-items: start; flex: 0 0 auto;">
+        <section style="padding-top: 10px; border-top: 1px solid #ccc; min-height: 42vh; font-size: 12px; box-sizing: border-box;">
+          <h2 style="font-size: 14px; margin: 0 0 8px;">Balken-Einstellungen</h2>
+          <div style="color: #666; margin-bottom: 8px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen.</div>
         <label style="display: block; margin-bottom: 5px;">
           <input id="toggle-highlight-feargreed" type="checkbox">
           Fear &amp; Greed berücksichtigen
@@ -87,8 +93,59 @@
         <label style="display: block; margin: 0 0 7px 22px;">
           Bandabstand: <input id="highlight-pma-multiplier" type="number" min="0" step="0.1" style="width: 52px;"> × Standardabweichung
         </label>
-        <button id="reset-highlight-settings" type="button" style="font-size: 11px;">Auf Standard zurücksetzen</button>
-      </section>
+          <button id="reset-highlight-settings" type="button" style="font-size: 11px;">Auf Standard zurücksetzen</button>
+        </section>
+        <section style="padding-top: 10px; border-top: 1px solid #ccc; min-height: 42vh; font-size: 12px; box-sizing: border-box;">
+          <h2 style="font-size: 14px; margin: 0 0 8px;">Score-Punktesumme</h2>
+          <div id="standardized-score" style="font-size: 24px; font-weight: bold;">–</div>
+          <div id="standardized-score-label" style="color: #666; margin-top: 2px;">Alle aktivierten Indikatorpunkte werden addiert · 0 = neutral</div>
+          <div style="margin-top: 8px;">
+            <label style="display: block;"><input id="score-use-feargreed" type="checkbox"> Fear &amp; Greed</label>
+            <label style="display: block;"><input id="score-use-rsi" type="checkbox"> RSI</label>
+            <label style="display: block;"><input id="score-use-pma" type="checkbox"> MA-Abweichung</label>
+          </div>
+          <div id="standardized-score-details" style="color: #666; margin-top: 7px; font-size: 11px;"></div>
+          <div style="margin-top: 10px; color: #666; font-size: 11px;">Punkte je Wertebereich:</div>
+          <div style="margin-top: 4px; line-height: 1.7;">
+            <div style="font-weight: bold;">Fear &amp; Greed</div>
+            <div>&lt;10: <input id="score-fg-0-10" type="number" style="width: 42px;"></div>
+            <div>10–20: <input id="score-fg-10-20" type="number" style="width: 42px;"></div>
+            <div>20–30: <input id="score-fg-20-30" type="number" style="width: 42px;"></div>
+            <div>30–40: <input id="score-fg-30-40" type="number" style="width: 42px;"></div>
+            <div>40–50: <input id="score-fg-40-50" type="number" style="width: 42px;"></div>
+            <div>50–60: <input id="score-fg-50-60" type="number" style="width: 42px;"></div>
+            <div>60–70: <input id="score-fg-60-70" type="number" style="width: 42px;"></div>
+            <div>70–80: <input id="score-fg-70-80" type="number" style="width: 42px;"></div>
+            <div>80–90: <input id="score-fg-80-90" type="number" style="width: 42px;"></div>
+            <div>≥90: <input id="score-fg-90-100" type="number" style="width: 42px;"></div>
+            <div style="font-weight: bold; margin-top: 5px;">RSI</div>
+            <div>&lt;10: <input id="score-rsi-0-10" type="number" style="width: 42px;"></div>
+            <div>10–20: <input id="score-rsi-10-20" type="number" style="width: 42px;"></div>
+            <div>20–30: <input id="score-rsi-20-30" type="number" style="width: 42px;"></div>
+            <div>30–40: <input id="score-rsi-30-40" type="number" style="width: 42px;"></div>
+            <div>40–50: <input id="score-rsi-40-50" type="number" style="width: 42px;"></div>
+            <div>50–60: <input id="score-rsi-50-60" type="number" style="width: 42px;"></div>
+            <div>60–70: <input id="score-rsi-60-70" type="number" style="width: 42px;"></div>
+            <div>70–80: <input id="score-rsi-70-80" type="number" style="width: 42px;"></div>
+            <div>80–90: <input id="score-rsi-80-90" type="number" style="width: 42px;"></div>
+            <div>≥90: <input id="score-rsi-90-100" type="number" style="width: 42px;"></div>
+            <div style="font-weight: bold; margin-top: 5px;">Moving-Average-Abweichung</div>
+            <div>Unter Trend ≤−5σ: <input id="score-pma-le-minus5" type="number" style="width: 42px;"></div>
+            <div>Unter Trend −5…−4σ: <input id="score-pma-minus5-minus4" type="number" style="width: 42px;"></div>
+            <div>Unter Trend −4…−3σ: <input id="score-pma-minus4-minus3" type="number" style="width: 42px;"></div>
+            <div>Unter Trend −3…−2σ: <input id="score-pma-minus3-minus2" type="number" style="width: 42px;"></div>
+            <div>Unter Trend −2…−1σ: <input id="score-pma-minus2-minus1" type="number" style="width: 42px;"></div>
+            <div>Unter Trend −1…0σ: <input id="score-pma-minus1-0" type="number" style="width: 42px;"></div>
+            <div>Über Trend 0…1σ: <input id="score-pma-0-1" type="number" style="width: 42px;"></div>
+            <div>Über Trend 1…2σ: <input id="score-pma-1-2" type="number" style="width: 42px;"></div>
+            <div>Über Trend 2…3σ: <input id="score-pma-2-3" type="number" style="width: 42px;"></div>
+            <div>Über Trend 3…4σ: <input id="score-pma-3-4" type="number" style="width: 42px;"></div>
+            <div>Über Trend 4…5σ: <input id="score-pma-4-5" type="number" style="width: 42px;"></div>
+            <div>Über Trend ≥5σ: <input id="score-pma-ge5" type="number" style="width: 42px;"></div>
+          </div>
+          <button id="reset-score-settings" type="button" style="font-size: 11px; margin-top: 8px;">Score auf Standard zurücksetzen</button>
+        </section>
+      </div>
     </aside>
   </div>
 
@@ -103,16 +160,38 @@
       let lastHighlightRanges = [];
       let lastChartData = null;
       const HIGHLIGHT_SETTINGS_KEY = 'aktienanalyse-highlight-settings';
+      const SCORE_SETTINGS_KEY = 'aktienanalyse-score-settings-v2';
       const DEFAULT_HIGHLIGHT_SETTINGS = {
         useFearGreed: true,
         useRsi: true,
         usePma: true,
+        scoreUseFearGreed: true,
+        scoreUseRsi: true,
+        scoreUsePma: true,
+        scoreFg0_10: 100, scoreFg10_20: 75, scoreFg20_30: 50, scoreFg30_40: 25, scoreFg40_50: 0,
+        scoreFg50_60: 0, scoreFg60_70: -25, scoreFg70_80: -50, scoreFg80_90: -75, scoreFg90_100: -100,
+        scoreRsi0_10: 100, scoreRsi10_20: 75, scoreRsi20_30: 50, scoreRsi30_40: 25, scoreRsi40_50: 0,
+        scoreRsi50_60: 0, scoreRsi60_70: -25, scoreRsi70_80: -50, scoreRsi80_90: -75, scoreRsi90_100: -100,
+        scorePmaLeMinus5: 100, scorePmaMinus5Minus4: 80, scorePmaMinus4Minus3: 60,
+        scorePmaMinus3Minus2: 40, scorePmaMinus2Minus1: 20, scorePmaMinus1_0: 0,
+        scorePma0_1: 0, scorePma1_2: -20, scorePma2_3: -40, scorePma3_4: -60,
+        scorePma4_5: -80, scorePmaGe5: -100,
         fearGreedBuy: 25,
         fearGreedSell: 75,
         rsiBuy: 30,
         rsiSell: 70,
         pmaStdMultiplier: 1,
       };
+      const SCORE_SETTING_NAMES = [
+        'scoreUseFearGreed', 'scoreUseRsi', 'scoreUsePma',
+        'scoreFg0_10', 'scoreFg10_20', 'scoreFg20_30', 'scoreFg30_40', 'scoreFg40_50',
+        'scoreFg50_60', 'scoreFg60_70', 'scoreFg70_80', 'scoreFg80_90', 'scoreFg90_100',
+        'scoreRsi0_10', 'scoreRsi10_20', 'scoreRsi20_30', 'scoreRsi30_40', 'scoreRsi40_50',
+        'scoreRsi50_60', 'scoreRsi60_70', 'scoreRsi70_80', 'scoreRsi80_90', 'scoreRsi90_100',
+        'scorePmaLeMinus5', 'scorePmaMinus5Minus4', 'scorePmaMinus4Minus3', 'scorePmaMinus3Minus2',
+        'scorePmaMinus2Minus1', 'scorePmaMinus1_0', 'scorePma0_1', 'scorePma1_2', 'scorePma2_3',
+        'scorePma3_4', 'scorePma4_5', 'scorePmaGe5',
+      ];
       let highlightSettings = { ...DEFAULT_HIGHLIGHT_SETTINGS };
 
       function loadHighlightSettings(symbol) {
@@ -122,16 +201,49 @@
         } catch {
           allSettings = {};
         }
-        highlightSettings = { ...DEFAULT_HIGHLIGHT_SETTINGS, ...(allSettings[symbol] || {}) };
+        let globalScoreSettings = {};
+        try {
+          globalScoreSettings = JSON.parse(localStorage.getItem(SCORE_SETTINGS_KEY)) || {};
+        } catch {
+          globalScoreSettings = {};
+        }
+        const assetSettings = { ...(allSettings[symbol] || {}) };
+        SCORE_SETTING_NAMES.forEach(name => delete assetSettings[name]);
+        highlightSettings = {
+          ...DEFAULT_HIGHLIGHT_SETTINGS,
+          ...assetSettings,
+          ...globalScoreSettings,
+        };
 
         document.getElementById('toggle-highlight-feargreed').checked = highlightSettings.useFearGreed;
         document.getElementById('toggle-highlight-rsi').checked = highlightSettings.useRsi;
         document.getElementById('toggle-highlight-pma').checked = highlightSettings.usePma;
+        document.getElementById('score-use-feargreed').checked = highlightSettings.scoreUseFearGreed;
+        document.getElementById('score-use-rsi').checked = highlightSettings.scoreUseRsi;
+        document.getElementById('score-use-pma').checked = highlightSettings.scoreUsePma;
         document.getElementById('highlight-feargreed-buy').value = highlightSettings.fearGreedBuy;
         document.getElementById('highlight-feargreed-sell').value = highlightSettings.fearGreedSell;
         document.getElementById('highlight-rsi-buy').value = highlightSettings.rsiBuy;
         document.getElementById('highlight-rsi-sell').value = highlightSettings.rsiSell;
         document.getElementById('highlight-pma-multiplier').value = highlightSettings.pmaStdMultiplier;
+        const scoreInputs = {
+          'score-fg-0-10': 'scoreFg0_10', 'score-fg-10-20': 'scoreFg10_20', 'score-fg-20-30': 'scoreFg20_30',
+          'score-fg-30-40': 'scoreFg30_40', 'score-fg-40-50': 'scoreFg40_50', 'score-fg-50-60': 'scoreFg50_60',
+          'score-fg-60-70': 'scoreFg60_70', 'score-fg-70-80': 'scoreFg70_80',
+          'score-fg-80-90': 'scoreFg80_90', 'score-fg-90-100': 'scoreFg90_100',
+          'score-rsi-0-10': 'scoreRsi0_10', 'score-rsi-10-20': 'scoreRsi10_20', 'score-rsi-20-30': 'scoreRsi20_30',
+          'score-rsi-30-40': 'scoreRsi30_40', 'score-rsi-40-50': 'scoreRsi40_50', 'score-rsi-50-60': 'scoreRsi50_60',
+          'score-rsi-60-70': 'scoreRsi60_70', 'score-rsi-70-80': 'scoreRsi70_80',
+          'score-rsi-80-90': 'scoreRsi80_90', 'score-rsi-90-100': 'scoreRsi90_100',
+          'score-pma-le-minus5': 'scorePmaLeMinus5', 'score-pma-minus5-minus4': 'scorePmaMinus5Minus4',
+          'score-pma-minus4-minus3': 'scorePmaMinus4Minus3', 'score-pma-minus3-minus2': 'scorePmaMinus3Minus2',
+          'score-pma-minus2-minus1': 'scorePmaMinus2Minus1', 'score-pma-minus1-0': 'scorePmaMinus1_0',
+          'score-pma-0-1': 'scorePma0_1', 'score-pma-1-2': 'scorePma1_2', 'score-pma-2-3': 'scorePma2_3',
+          'score-pma-3-4': 'scorePma3_4', 'score-pma-4-5': 'scorePma4_5', 'score-pma-ge5': 'scorePmaGe5',
+        };
+        Object.entries(scoreInputs).forEach(([elementId, settingName]) => {
+          document.getElementById(elementId).value = highlightSettings[settingName];
+        });
       }
 
       function saveHighlightSettings() {
@@ -141,8 +253,14 @@
         } catch {
           allSettings = {};
         }
-        allSettings[currentSymbol] = highlightSettings;
+        const assetSettings = { ...highlightSettings };
+        SCORE_SETTING_NAMES.forEach(name => delete assetSettings[name]);
+        allSettings[currentSymbol] = assetSettings;
         localStorage.setItem(HIGHLIGHT_SETTINGS_KEY, JSON.stringify(allSettings));
+
+        const globalScoreSettings = {};
+        SCORE_SETTING_NAMES.forEach(name => { globalScoreSettings[name] = highlightSettings[name]; });
+        localStorage.setItem(SCORE_SETTINGS_KEY, JSON.stringify(globalScoreSettings));
       }
 
       function resetHighlightSettings() {
@@ -150,6 +268,22 @@
         saveHighlightSettings();
         loadHighlightSettings(currentSymbol);
         rerenderHighlightCharts();
+        renderStandardizedScore();
+      }
+
+      function updateScoreSetting(name, value) {
+        highlightSettings[name] = value;
+        saveHighlightSettings();
+        renderStandardizedScore();
+      }
+
+      function resetScoreSettings() {
+        SCORE_SETTING_NAMES.forEach(name => {
+          highlightSettings[name] = DEFAULT_HIGHLIGHT_SETTINGS[name];
+        });
+        saveHighlightSettings();
+        loadHighlightSettings(currentSymbol);
+        renderStandardizedScore();
       }
 
       function updateHighlightSetting(name, value) {
@@ -162,7 +296,7 @@
         }
       }
 
-      function bindNumberSetting(elementId, settingName) {
+      function bindNumberSetting(elementId, settingName, updateFunction = updateHighlightSetting) {
         const input = document.getElementById(elementId);
         let lastValue = input.value;
         let pollTimer = null;
@@ -171,7 +305,7 @@
           if (input.value === lastValue) return;
           lastValue = input.value;
           const value = Number(input.value);
-          if (Number.isFinite(value)) updateHighlightSetting(settingName, value);
+          if (Number.isFinite(value)) updateFunction(settingName, value);
         };
         const stopPolling = () => {
           if (pollTimer != null) {
@@ -492,6 +626,137 @@
         return null;
       }
 
+      function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+      }
+
+      function scoreFearGreed(value) {
+        if (value < 10) return highlightSettings.scoreFg0_10;
+        if (value < 20) return highlightSettings.scoreFg10_20;
+        if (value < 30) return highlightSettings.scoreFg20_30;
+        if (value < 40) return highlightSettings.scoreFg30_40;
+        if (value < 50) return highlightSettings.scoreFg40_50;
+        if (value < 60) return highlightSettings.scoreFg50_60;
+        if (value < 70) return highlightSettings.scoreFg60_70;
+        if (value < 80) return highlightSettings.scoreFg70_80;
+        if (value < 90) return highlightSettings.scoreFg80_90;
+        return highlightSettings.scoreFg90_100;
+      }
+
+      function scoreRsi(value) {
+        if (value < 10) return highlightSettings.scoreRsi0_10;
+        if (value < 20) return highlightSettings.scoreRsi10_20;
+        if (value < 30) return highlightSettings.scoreRsi20_30;
+        if (value < 40) return highlightSettings.scoreRsi30_40;
+        if (value < 50) return highlightSettings.scoreRsi40_50;
+        if (value < 60) return highlightSettings.scoreRsi50_60;
+        if (value < 70) return highlightSettings.scoreRsi60_70;
+        if (value < 80) return highlightSettings.scoreRsi70_80;
+        if (value < 90) return highlightSettings.scoreRsi80_90;
+        return highlightSettings.scoreRsi90_100;
+      }
+
+      function scorePmaZ(z) {
+        if (z <= -5) return highlightSettings.scorePmaLeMinus5;
+        if (z < -4) return highlightSettings.scorePmaMinus5Minus4;
+        if (z < -3) return highlightSettings.scorePmaMinus4Minus3;
+        if (z < -2) return highlightSettings.scorePmaMinus3Minus2;
+        if (z < -1) return highlightSettings.scorePmaMinus2Minus1;
+        if (z < 0) return highlightSettings.scorePmaMinus1_0;
+        if (z < 1) return highlightSettings.scorePma0_1;
+        if (z < 2) return highlightSettings.scorePma1_2;
+        if (z < 3) return highlightSettings.scorePma2_3;
+        if (z < 4) return highlightSettings.scorePma3_4;
+        if (z < 5) return highlightSettings.scorePma4_5;
+        return highlightSettings.scorePmaGe5;
+      }
+
+      function computeStandardizedScoreSeries(data) {
+        if (!data || !data.timestamps) return [];
+        const pmaTrend = computeTrendLine(data.priceVsMaPct);
+        const pmaStd = data.priceVsMaPctStd;
+        return data.timestamps.map((timestamp, i) => {
+          const scores = [];
+          const fg = fearGreedScoreAt(timestamp);
+          if (highlightSettings.scoreUseFearGreed && fg != null) {
+            scores.push(scoreFearGreed(fg));
+          }
+          const rsi = data.rsi && data.rsi[i];
+          if (highlightSettings.scoreUseRsi && rsi != null) {
+            scores.push(scoreRsi(rsi));
+          }
+          const pma = data.priceVsMaPct && data.priceVsMaPct[i];
+          const trend = pmaTrend && pmaTrend[i];
+          if (highlightSettings.scoreUsePma && pma != null && trend != null && pmaStd > 0) {
+            scores.push(scorePmaZ((pma - trend) / pmaStd));
+          }
+          return scores.length ? scores.reduce((sum, value) => sum + value, 0) : null;
+        });
+      }
+
+      function renderStandardizedScore() {
+        const scoreEl = document.getElementById('standardized-score');
+        const detailsEl = document.getElementById('standardized-score-details');
+        const data = lastChartData;
+        if (!data) return;
+
+        const scoreSeries = computeStandardizedScoreSeries(data);
+        const scoreValues = scoreSeries.filter(value => value != null);
+        const scoreMin = scoreValues.length ? Math.min(0, ...scoreValues) : 0;
+        const scoreMax = scoreValues.length ? Math.max(0, ...scoreValues) : 1;
+        const scoreRangeMin = scoreMin === scoreMax ? scoreMin - 1 : scoreMin;
+        const scoreRangeMax = scoreMin === scoreMax ? scoreMax + 1 : scoreMax;
+        renderIndicatorChart('standardized-score-chart', scoreSeries, data.timestamps, currentRange, {
+          fixedMin: scoreRangeMin,
+          fixedMax: scoreRangeMax,
+          referenceLines: [{ value: 0, stroke: '#aaa' }],
+          color: '#666',
+          formatValue: v => v.toFixed(0),
+          padLeft: sharedChartPadLeft,
+          height: 240,
+        });
+
+        const scores = [];
+        const details = [];
+        const lastTimestamp = data.timestamps && data.timestamps[data.timestamps.length - 1];
+        const fg = lastTimestamp != null ? fearGreedScoreAt(lastTimestamp) : null;
+        if (highlightSettings.scoreUseFearGreed && fg != null) {
+          const fgScore = scoreFearGreed(fg);
+          scores.push(fgScore);
+          details.push(`F&G: ${fgScore.toFixed(0)}`);
+        }
+
+        const rsi = lastValue(data.rsi);
+        if (highlightSettings.scoreUseRsi && rsi != null) {
+          const rsiScore = scoreRsi(rsi);
+          scores.push(rsiScore);
+          details.push(`RSI: ${rsiScore.toFixed(0)}`);
+        }
+
+        const pma = lastValue(data.priceVsMaPct);
+        const pmaTrend = computeTrendLine(data.priceVsMaPct);
+        const pmaTrendValue = lastValue(pmaTrend);
+        const pmaStd = data.priceVsMaPctStd;
+        if (highlightSettings.scoreUsePma && pma != null && pmaTrendValue != null && pmaStd > 0) {
+          const pmaScore = scorePmaZ((pma - pmaTrendValue) / pmaStd);
+          scores.push(pmaScore);
+          details.push(`MA-Abw.: ${pmaScore.toFixed(0)}`);
+        }
+
+        if (!scores.length) {
+          scoreEl.textContent = '–';
+          document.getElementById('standardized-score-main-current').textContent = '';
+          detailsEl.textContent = '';
+          return;
+        }
+
+        const score = scores.reduce((sum, value) => sum + value, 0);
+        scoreEl.textContent = score.toFixed(0);
+        document.getElementById('standardized-score-main-current').textContent = score.toFixed(0);
+        scoreEl.style.color = score > 0 ? '#16803c' : score < 0 ? '#b42318' : '#666';
+        detailsEl.textContent = details.join(' · ');
+      }
+
       function renderNoDataMessage(svg, width, height) {
         const ns = 'http://www.w3.org/2000/svg';
         const label = document.createElementNS(ns, 'text');
@@ -507,7 +772,7 @@
       function renderIndicatorChart(svgId, series, timestamps, rangeKey, options = {}) {
         const svg = document.getElementById(svgId);
         svg.innerHTML = '';
-        const width = 600, height = 90;
+        const width = 600, height = options.height || 90;
         if (!series || series.length < 2) {
           renderNoDataMessage(svg, width, height);
           return;
@@ -728,6 +993,7 @@
 
           document.getElementById('current-price').textContent =
             closes && closes.length ? closes[closes.length - 1].toFixed(2) : '';
+          renderStandardizedScore();
         } catch (err) {
           document.getElementById('range-change').textContent = 'Fehler';
           document.getElementById('current-price').textContent = '';
@@ -746,6 +1012,7 @@
             `${fg.score.toFixed(1)} (${fg.rating})`;
 
           fearGreedHistory = fg.history || [];
+          renderStandardizedScore();
           if (lastChartTimestamps) {
             renderFearGreedChart(currentRange, lastHighlightRanges, lastChartTimestamps);
           }
@@ -828,9 +1095,36 @@
         ['highlight-rsi-buy', 'rsiBuy'],
         ['highlight-rsi-sell', 'rsiSell'],
         ['highlight-pma-multiplier', 'pmaStdMultiplier'],
-      ].forEach(([elementId, settingName]) => bindNumberSetting(elementId, settingName));
+        ['score-fg-0-10', 'scoreFg0_10'], ['score-fg-10-20', 'scoreFg10_20'], ['score-fg-20-30', 'scoreFg20_30'],
+        ['score-fg-30-40', 'scoreFg30_40'], ['score-fg-40-50', 'scoreFg40_50'], ['score-fg-50-60', 'scoreFg50_60'],
+        ['score-fg-60-70', 'scoreFg60_70'], ['score-fg-70-80', 'scoreFg70_80'], ['score-fg-80-90', 'scoreFg80_90'],
+        ['score-fg-90-100', 'scoreFg90_100'],
+        ['score-rsi-0-10', 'scoreRsi0_10'], ['score-rsi-10-20', 'scoreRsi10_20'], ['score-rsi-20-30', 'scoreRsi20_30'],
+        ['score-rsi-30-40', 'scoreRsi30_40'], ['score-rsi-40-50', 'scoreRsi40_50'], ['score-rsi-50-60', 'scoreRsi50_60'],
+        ['score-rsi-60-70', 'scoreRsi60_70'], ['score-rsi-70-80', 'scoreRsi70_80'], ['score-rsi-80-90', 'scoreRsi80_90'],
+        ['score-rsi-90-100', 'scoreRsi90_100'],
+        ['score-pma-le-minus5', 'scorePmaLeMinus5'], ['score-pma-minus5-minus4', 'scorePmaMinus5Minus4'],
+        ['score-pma-minus4-minus3', 'scorePmaMinus4Minus3'], ['score-pma-minus3-minus2', 'scorePmaMinus3Minus2'],
+        ['score-pma-minus2-minus1', 'scorePmaMinus2Minus1'], ['score-pma-minus1-0', 'scorePmaMinus1_0'],
+        ['score-pma-0-1', 'scorePma0_1'], ['score-pma-1-2', 'scorePma1_2'], ['score-pma-2-3', 'scorePma2_3'],
+        ['score-pma-3-4', 'scorePma3_4'], ['score-pma-4-5', 'scorePma4_5'], ['score-pma-ge5', 'scorePmaGe5'],
+      ].forEach(([elementId, settingName]) => {
+        const scoreSetting = settingName.startsWith('score');
+        bindNumberSetting(elementId, settingName, scoreSetting ? updateScoreSetting : updateHighlightSetting);
+      });
 
       document.getElementById('reset-highlight-settings').addEventListener('click', resetHighlightSettings);
+      document.getElementById('reset-score-settings').addEventListener('click', resetScoreSettings);
+
+      document.getElementById('score-use-feargreed').addEventListener('change', (event) => {
+        updateScoreSetting('scoreUseFearGreed', event.target.checked);
+      });
+      document.getElementById('score-use-rsi').addEventListener('change', (event) => {
+        updateScoreSetting('scoreUseRsi', event.target.checked);
+      });
+      document.getElementById('score-use-pma').addEventListener('change', (event) => {
+        updateScoreSetting('scoreUsePma', event.target.checked);
+      });
 
       const FAVORITES_KEY = 'aktienanalyse-favorites';
 
