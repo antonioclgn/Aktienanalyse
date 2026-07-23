@@ -9,6 +9,23 @@
 </style>
 </head>
 <body>
+  <div style="position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #eee;">
+    <span id="notifications-status" style="font-size: 11px; color: #999;"></span>
+    <button id="notifications-toggle" type="button" style="cursor: pointer; font-size: 13px;">
+      🔔 Benachrichtigungen <span id="notifications-badge" style="display: none; background: #dc2626; color: white; border-radius: 8px; padding: 0 5px; font-size: 11px;"></span>
+    </button>
+    <div id="notifications-panel" style="display: none; position: absolute; top: 100%; right: 8px; width: 340px; max-height: 65vh; overflow-y: auto; background: white; border: 1px solid #ccc; box-shadow: 0 2px 6px rgba(0,0,0,0.15); z-index: 10;">
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white;">
+        <strong style="font-size: 12px;">Benachrichtigungen</strong>
+        <span>
+          <button id="notifications-mark-read" type="button" title="Alle als gelesen markieren">Gelesen</button>
+          <button id="notifications-clear" type="button" title="Alle löschen">Löschen</button>
+        </span>
+      </div>
+      <ul id="notifications-list" style="list-style: none; margin: 0; padding: 0;"></ul>
+    </div>
+  </div>
+
   <div style="display: flex; align-items: flex-start;">
     <div style="flex: 1; min-width: 0; padding: 8px 16px 8px 8px; box-sizing: border-box;">
 
@@ -67,11 +84,24 @@
       <section style="margin-top: auto; padding-top: 10px; border-top: 1px solid #ccc; min-height: 25vh; font-size: 12px;">
         <h2 style="font-size: 14px; margin: 0 0 8px;">Balken-Einstellungen</h2>
         <div style="color: #666; margin-bottom: 6px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen. Gilt für alle Werte.</div>
-        <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 8px;">
+        <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
           <select id="preset-select" style="flex: 1; min-width: 0;"></select>
+          <button id="watch-preset" type="button" title="Diesen Filter überwachen (Favorit)" style="background: none; border: none; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px;">☆</button>
           <button id="save-preset" type="button" title="Aktuelle Werte als Variante speichern">Speichern</button>
           <button id="delete-preset" type="button" title="Gewählte Variante löschen">×</button>
         </div>
+        <div id="watch-ranges" style="color: #666; font-size: 11px; margin-bottom: 4px;">
+          <div style="margin-bottom: 2px;">Überwachen in diesen Zeitfenstern:</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 2px 10px;">
+            <label><input type="checkbox" data-watch-range="1d"> Tag</label>
+            <label><input type="checkbox" data-watch-range="5d"> Woche</label>
+            <label><input type="checkbox" data-watch-range="1mo"> Monat</label>
+            <label><input type="checkbox" data-watch-range="1y"> Jahr</label>
+            <label><input type="checkbox" data-watch-range="5y"> 5 Jahre</label>
+            <label><input type="checkbox" data-watch-range="10y"> 10 Jahre</label>
+          </div>
+        </div>
+        <div id="watched-filters" style="color: #666; font-size: 11px; margin-bottom: 8px;"></div>
         <label style="display: block; margin-bottom: 5px;">
           <input id="toggle-highlight-feargreed" type="checkbox">
           Fear &amp; Greed berücksichtigen
@@ -205,6 +235,7 @@
         });
         select.value = active || CUSTOM_PRESET_LABEL;
         document.getElementById('delete-preset').disabled = !(active && highlightPresets[active]);
+        updateWatchUi();
       }
 
       function applyHighlightSettings(settings) {
@@ -230,6 +261,9 @@
         highlightPresets[name] = { ...highlightSettings };
         localStorage.setItem(PRESETS_KEY, JSON.stringify(highlightPresets));
         renderPresetOptions();
+        // Wird eine überwachte Variante überschrieben, muss der Server die neuen
+        // Schwellenwerte kennen.
+        syncWatchlist();
       }
 
       function deleteSelectedPreset() {
@@ -238,6 +272,7 @@
         delete highlightPresets[name];
         localStorage.setItem(PRESETS_KEY, JSON.stringify(highlightPresets));
         renderPresetOptions();
+        syncWatchlist();
       }
 
       function loadHighlightSettings() {
@@ -497,26 +532,28 @@
       // Zustand JEDES Indikators einzeln an einem Zeitpunkt: 'green' (Kaufbedingung
       // erfüllt), 'red' (Verkaufsbedingung erfüllt) oder null. null steht auch für
       // "deaktiviert" oder "keine Daten" — beides zählt nicht als Signal.
-      function indicatorSignalsAt(i, timestamps, rsi, pma, pmaUpper, pmaLower) {
+      // `settings` ist standardmäßig die angezeigte Einstellung; die Überwachung im
+      // Hintergrund reicht stattdessen die Werte des jeweiligen Filters herein.
+      function indicatorSignalsAt(i, timestamps, rsi, pma, pmaUpper, pmaLower, settings = highlightSettings) {
         const fg = fearGreedScoreAt(timestamps[i]);
         const smartDumb = smartDumbAt(timestamps[i]);
         const classify = (buy, sell) => (buy ? 'green' : (sell ? 'red' : null));
         const pmaReady = pma && pma[i] != null
           && pmaUpper && pmaUpper[i] != null && pmaLower && pmaLower[i] != null;
         return {
-          feargreed: highlightSettings.useFearGreed && fg != null
-            ? classify(fg <= highlightSettings.fearGreedBuy, fg >= highlightSettings.fearGreedSell)
+          feargreed: settings.useFearGreed && fg != null
+            ? classify(fg <= settings.fearGreedBuy, fg >= settings.fearGreedSell)
             : null,
           // Profis long und Kleinanleger short -> Kaufsignal, umgekehrt Verkaufssignal.
-          smartdumb: highlightSettings.useSmartDumb && smartDumb != null
+          smartdumb: settings.useSmartDumb && smartDumb != null
             ? classify(
-              smartDumb.spread >= highlightSettings.smartDumbBuy,
-              smartDumb.spread <= highlightSettings.smartDumbSell)
+              smartDumb.spread >= settings.smartDumbBuy,
+              smartDumb.spread <= settings.smartDumbSell)
             : null,
-          rsi: highlightSettings.useRsi && rsi && rsi[i] != null
-            ? classify(rsi[i] <= highlightSettings.rsiBuy, rsi[i] >= highlightSettings.rsiSell)
+          rsi: settings.useRsi && rsi && rsi[i] != null
+            ? classify(rsi[i] <= settings.rsiBuy, rsi[i] >= settings.rsiSell)
             : null,
-          pma: highlightSettings.usePma && pmaReady
+          pma: settings.usePma && pmaReady
             ? classify(pma[i] < pmaLower[i], pma[i] > pmaUpper[i])
             : null,
         };
@@ -529,20 +566,38 @@
         pma: 'usePma',
       };
 
+      // Gemeinsames Signal: nur wenn ALLE aktivierten Indikatoren in dieselbe
+      // Richtung zeigen (sonst null). Dieselbe Regel gilt für die Balken im Chart
+      // und für die Überwachung der Filter im Hintergrund.
+      function combinedSignal(signals, settings = highlightSettings) {
+        const enabled = Object.keys(ENABLED_SETTING_BY_INDICATOR)
+          .filter(key => settings[ENABLED_SETTING_BY_INDICATOR[key]]);
+        if (!enabled.length) return null;
+        if (enabled.every(key => signals[key] === 'green')) return 'green';
+        if (enabled.every(key => signals[key] === 'red')) return 'red';
+        return null;
+      }
+
+      // Trendlinie der Moving-Average-Abweichung samt oberem/unterem Band. Das Band
+      // fehlt (null), solange keine Standardabweichung vorliegt.
+      function computePmaBands(priceVsMaPct, std, multiplier) {
+        const trend = computeTrendLine(priceVsMaPct);
+        const distance = std != null ? std * multiplier : null;
+        if (!trend || distance == null) return { trend, upper: null, lower: null };
+        return {
+          trend,
+          upper: trend.map(v => (v != null ? v + distance : null)),
+          lower: trend.map(v => (v != null ? v - distance : null)),
+        };
+      }
+
       // Findet zusammenhängende Zeiträume, in denen gleichzeitig gilt:
       // grün = alle aktivierten Indikatoren zeigen ein Kaufsignal
       // rot  = alle aktivierten Indikatoren zeigen ein Verkaufssignal
       function computeHighlightRanges(timestamps, rsi, pma, pmaUpper, pmaLower) {
-        const enabled = Object.keys(ENABLED_SETTING_BY_INDICATOR)
-          .filter(key => highlightSettings[ENABLED_SETTING_BY_INDICATOR[key]]);
-
-        const types = timestamps.map((t, i) => {
-          if (!enabled.length) return null;
-          const signals = indicatorSignalsAt(i, timestamps, rsi, pma, pmaUpper, pmaLower);
-          if (enabled.every(key => signals[key] === 'green')) return 'green';
-          if (enabled.every(key => signals[key] === 'red')) return 'red';
-          return null;
-        });
+        const types = timestamps.map((t, i) => combinedSignal(
+          indicatorSignalsAt(i, timestamps, rsi, pma, pmaUpper, pmaLower)
+        ));
 
         const ranges = [];
         let start = 0, current = types.length ? types[0] : null;
@@ -616,13 +671,19 @@
       // Kumulierter (laufender) Durchschnitt: result[i] = Durchschnitt von series[0..i].
       // Dadurch bewegt sich die Linie (statt starr zu sein) und landet am rechten
       // Rand exakt beim Gesamtdurchschnitt des Zeitraums (= derselbe Wert wie "Ø" im Text).
+      // Lücken (null) zählen nicht mit — sonst zöge eine fehlende Stelle den
+      // Durchschnitt gegen 0. Identisch zu cumulative_trend() in server.py, damit
+      // Balken im Chart und Benachrichtigungen dieselbe Linie verwenden.
       function computeTrendLine(series) {
         if (!series) return null;
         const result = new Array(series.length).fill(null);
-        let sum = 0;
+        let sum = 0, count = 0;
         for (let i = 0; i < series.length; i++) {
-          sum += series[i];
-          result[i] = sum / (i + 1);
+          if (series[i] != null) {
+            sum += series[i];
+            count += 1;
+          }
+          result[i] = count ? sum / count : null;
         }
         return result;
       }
@@ -654,15 +715,9 @@
         const data = lastChartData;
         if (!data) return;
 
-        const pmaTrend = computeTrendLine(data.priceVsMaPct);
-        const pmaStd = data.priceVsMaPctStd;
-        const pmaBandDistance = pmaStd != null ? pmaStd * highlightSettings.pmaStdMultiplier : null;
-        const pmaUpper = pmaBandDistance != null
-          ? pmaTrend.map(v => (v != null ? v + pmaBandDistance : null))
-          : null;
-        const pmaLower = pmaBandDistance != null
-          ? pmaTrend.map(v => (v != null ? v - pmaBandDistance : null))
-          : null;
+        const { trend: pmaTrend, upper: pmaUpper, lower: pmaLower } = computePmaBands(
+          data.priceVsMaPct, data.priceVsMaPctStd, highlightSettings.pmaStdMultiplier
+        );
         const pmaOverlays = [{ series: pmaTrend, color: '#ccc' }];
         if (pmaUpper) pmaOverlays.push({ series: pmaUpper, color: '#ccc' });
         if (pmaLower) pmaOverlays.push({ series: pmaLower, color: '#ccc' });
@@ -965,6 +1020,7 @@
 
           document.getElementById('selected-instrument').textContent =
             `${data.market.name} (${data.market.symbol})`;
+
         } catch (err) {
           console.error(err);
         }
@@ -1154,6 +1210,7 @@
             saveFavorites(loadFavorites().filter(f => f.symbol !== fav.symbol));
             renderFavorites();
             updateFavoriteStar();
+            syncWatchlist();
           });
 
           actions.appendChild(upBtn);
@@ -1179,14 +1236,300 @@
         }
         renderFavorites();
         updateFavoriteStar();
+        syncWatchlist();
+      });
+
+      // ---------------------------------------------------------------------
+      // Überwachte Filter ("Favoriten-Filter") und Benachrichtigungen
+      //
+      // Ein als Favorit markierter Filter wird zusammen mit einem oder mehreren
+      // Zeitfenstern (z.B. 5 Jahre UND 10 Jahre) und den Favoriten-Werten an den
+      // Server gemeldet. Geprüft wird dort — auch bei geschlossenem Browser,
+      // solange server.py läuft. Diese Seite zeigt nur an, was der Server fand.
+      const WATCHED_FILTERS_KEY = 'aktienanalyse-watched-filters';
+      const DEFAULT_ALERT_RANGE = '1y';
+      const NOTIFICATION_POLL_MS = 60 * 1000;
+      const SIGNAL_LABELS = { green: 'Kaufsignal', red: 'Verkaufssignal' };
+      const RANGE_LABELS = {
+        '1d': 'Tag', '5d': 'Woche', '1mo': 'Monat',
+        '1y': 'Jahr', '5y': '5 Jahre', '10y': '10 Jahre',
+      };
+      let notifications = [];
+      let serverInfo = { mailConfigured: false, intervalSeconds: 300 };
+
+      function loadWatchedFilters() {
+        const stored = readStored(WATCHED_FILTERS_KEY, []);
+        if (!Array.isArray(stored)) return [];
+        return stored
+          .map(entry => {
+            // Ältere Stände: nur Name (String) oder ein einzelnes Zeitfenster ({name, range}).
+            if (typeof entry === 'string') return { name: entry, ranges: [DEFAULT_ALERT_RANGE] };
+            if (!entry || !entry.name) return null;
+            const ranges = Array.isArray(entry.ranges)
+              ? entry.ranges
+              : (entry.range ? [entry.range] : [DEFAULT_ALERT_RANGE]);
+            return { name: entry.name, ranges };
+          })
+          .filter(entry => entry)
+          // Nur bekannte Zeitfenster behalten; ohne gültiges Fenster fällt der Filter raus.
+          .map(entry => ({ name: entry.name, ranges: entry.ranges.filter(r => RANGE_LABELS[r]) }))
+          .filter(entry => entry.ranges.length);
+      }
+
+      function saveWatchedFilters(entries) {
+        localStorage.setItem(WATCHED_FILTERS_KEY, JSON.stringify(entries));
+        updateWatchUi();
+        syncWatchlist();
+      }
+
+      function filterSettingsByName(name) {
+        if (name === DEFAULT_PRESET_NAME) return DEFAULT_HIGHLIGHT_SETTINGS;
+        return highlightPresets[name] ? normalizeSettings(highlightPresets[name]) : null;
+      }
+
+      // Gelöschte Varianten fallen hier automatisch heraus.
+      function watchedFilters() {
+        return loadWatchedFilters()
+          .map(entry => ({ ...entry, settings: filterSettingsByName(entry.name) }))
+          .filter(entry => entry.settings);
+      }
+
+      function updateWatchUi() {
+        const selected = document.getElementById('preset-select').value;
+        const star = document.getElementById('watch-preset');
+        const watched = loadWatchedFilters();
+        const entry = watched.find(f => f.name === selected);
+        // Ungespeicherte Werte haben keinen Namen, auf den sich eine Überwachung beziehen könnte.
+        const disabled = selected === CUSTOM_PRESET_LABEL;
+        star.disabled = disabled;
+        star.style.opacity = disabled ? '0.35' : '1';
+        star.textContent = entry ? '★' : '☆';
+
+        const chosen = entry ? entry.ranges : [];
+        document.querySelectorAll('#watch-ranges input[data-watch-range]').forEach(box => {
+          box.checked = chosen.includes(box.dataset.watchRange);
+          box.disabled = disabled;
+        });
+
+        const active = watchedFilters();
+        document.getElementById('watched-filters').textContent = active.length
+          ? 'Überwacht: ' + active
+              .map(f => `${f.name} (${f.ranges.map(r => RANGE_LABELS[r]).join(', ')})`)
+              .join('; ') + ' — für alle Favoriten'
+          : 'Kein Filter überwacht (☆ markiert die Variante und wählt ein Zeitfenster).';
+      }
+
+      // Stern: schaltet die Überwachung ganz an oder aus. Beim Einschalten wird das
+      // gerade angezeigte Zeitfenster vorbelegt, damit sofort etwas überwacht wird.
+      function toggleWatchedFilter() {
+        const name = document.getElementById('preset-select').value;
+        if (name === CUSTOM_PRESET_LABEL || !filterSettingsByName(name)) return;
+        const watched = loadWatchedFilters();
+        if (watched.some(f => f.name === name)) {
+          saveWatchedFilters(watched.filter(f => f.name !== name));
+        } else {
+          const preset = RANGE_LABELS[currentRange] ? currentRange : DEFAULT_ALERT_RANGE;
+          saveWatchedFilters([...watched, { name, ranges: [preset] }]);
+          requestCheck();
+        }
+      }
+
+      // Einzelnes Zeitfenster für den gewählten Filter an-/abwählen. Wird das letzte
+      // Fenster abgewählt, endet die Überwachung dieses Filters ganz.
+      function toggleWatchRange(range, on) {
+        const name = document.getElementById('preset-select').value;
+        if (name === CUSTOM_PRESET_LABEL || !filterSettingsByName(name) || !RANGE_LABELS[range]) return;
+        const watched = loadWatchedFilters();
+        const entry = watched.find(f => f.name === name);
+        let next;
+        if (entry) {
+          const ranges = on
+            ? [...new Set([...entry.ranges, range])]
+            : entry.ranges.filter(r => r !== range);
+          next = ranges.length
+            ? watched.map(f => (f.name === name ? { name, ranges } : f))
+            : watched.filter(f => f.name !== name);
+        } else if (on) {
+          next = [...watched, { name, ranges: [range] }];
+        } else {
+          return;
+        }
+        saveWatchedFilters(next);
+        if (on) requestCheck();
+      }
+
+      // Favoriten und überwachte Filter (mit aufgelösten Schwellenwerten) an den
+      // Server geben — er prüft damit unabhängig von dieser Seite weiter.
+      async function syncWatchlist() {
+        try {
+          await fetch('/api/alerts/watchlist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ favorites: loadFavorites(), filters: watchedFilters() }),
+          });
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      async function requestCheck() {
+        try {
+          await fetch('/api/alerts/check', { method: 'POST' });
+        } catch (err) {
+          console.error(err);
+        }
+        refreshNotifications();
+      }
+
+      async function refreshNotifications() {
+        try {
+          const res = await fetch('/api/alerts/notifications');
+          const data = await res.json();
+          notifications = Array.isArray(data.notifications) ? data.notifications : [];
+          serverInfo = {
+            mailConfigured: !!data.mailConfigured,
+            intervalSeconds: data.intervalSeconds || serverInfo.intervalSeconds,
+          };
+          document.getElementById('notifications-status').textContent = '';
+        } catch (err) {
+          // Ohne laufenden Server gibt es keine Überwachung — das gehört sichtbar gemacht.
+          document.getElementById('notifications-status').textContent = 'Server nicht erreichbar';
+        }
+        renderNotifications();
+      }
+
+      function formatNotificationTime(ts) {
+        const date = new Date(ts);
+        return `${date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' })} `
+          + date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+      }
+
+      // Zeigt genau die Konstellation, die zur Benachrichtigung geführt hat:
+      // Filter, Zeitraum und Wert.
+      function showNotificationContext(entry) {
+        const settings = filterSettingsByName(entry.filter);
+        if (settings) {
+          highlightSettings = normalizeSettings(settings);
+          saveHighlightSettings();
+          loadHighlightSettings();
+        }
+        if (RANGE_LABELS[entry.range]) {
+          currentRange = entry.range;
+          rangeButtons.forEach(b => {
+            b.style.fontWeight = b.dataset.range === entry.range ? 'bold' : 'normal';
+          });
+        }
+        selectSymbol(entry.symbol);
+      }
+
+      function renderNotifications() {
+        const list = document.getElementById('notifications-list');
+        list.innerHTML = '';
+
+        if (!notifications.length) {
+          const empty = document.createElement('li');
+          empty.textContent = 'Noch keine Benachrichtigungen.';
+          empty.style.cssText = 'padding: 10px 8px; font-size: 12px; color: #999;';
+          list.appendChild(empty);
+        }
+
+        notifications.forEach(entry => {
+          const li = document.createElement('li');
+          li.style.cssText = 'padding: 6px 8px; border-bottom: 1px solid #eee; cursor: pointer; font-size: 12px;';
+          if (!entry.read) li.style.background = '#f5f8ff';
+          li.addEventListener('mouseenter', () => li.style.background = '#eee');
+          li.addEventListener('mouseleave', () => li.style.background = entry.read ? '' : '#f5f8ff');
+          li.addEventListener('click', () => {
+            markNotificationsRead();
+            showNotificationContext(entry);
+            document.getElementById('notifications-panel').style.display = 'none';
+          });
+
+          const signalLabel = SIGNAL_LABELS[entry.type] || 'Signal';
+          const headline = document.createElement('div');
+          // Anhaltende Signale (Dauer-Meilenstein) heben sich ab: sie sind die stärkere Info.
+          headline.textContent = entry.sustainedLabel
+            ? `⏳ Anhaltendes ${signalLabel} (seit ${entry.sustainedLabel}): ${entry.name || entry.symbol}`
+            : `${signalLabel}: ${entry.name || entry.symbol}`;
+          headline.style.color = (HIGHLIGHT_STYLES[entry.type] || {}).color || '';
+          headline.style.fontWeight = '700';
+
+          const meta = document.createElement('div');
+          meta.textContent = `Filter „${entry.filter}“ · ${RANGE_LABELS[entry.range] || entry.range}`
+            + `-Chart · ${formatNotificationTime(entry.ts)}`;
+          meta.style.cssText = 'color: #666; font-size: 11px;';
+
+          li.appendChild(headline);
+          li.appendChild(meta);
+          list.appendChild(li);
+        });
+
+        const footer = document.createElement('li');
+        footer.style.cssText = 'padding: 6px 8px; font-size: 11px; color: #999;';
+        footer.textContent = `Der Server prüft alle ${Math.round(serverInfo.intervalSeconds / 60)}`
+          + ' Minuten, auch bei geschlossenem Browser. '
+          + (serverInfo.mailConfigured
+            ? 'Mailversand ist eingerichtet.'
+            : 'Mailversand: data/mail_config.json anlegen.');
+        list.appendChild(footer);
+
+        const unread = notifications.filter(e => !e.read).length;
+        const badge = document.getElementById('notifications-badge');
+        badge.textContent = unread;
+        badge.style.display = unread ? 'inline-block' : 'none';
+      }
+
+      async function markNotificationsRead() {
+        notifications = notifications.map(e => ({ ...e, read: true }));
+        renderNotifications();
+        try {
+          await fetch('/api/alerts/notifications/read', { method: 'POST' });
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      document.getElementById('watch-preset').addEventListener('click', toggleWatchedFilter);
+      document.querySelectorAll('#watch-ranges input[data-watch-range]').forEach(box => {
+        box.addEventListener('change', (event) => {
+          toggleWatchRange(event.target.dataset.watchRange, event.target.checked);
+        });
+      });
+
+      document.getElementById('notifications-toggle').addEventListener('click', (event) => {
+        event.stopPropagation();
+        const panel = document.getElementById('notifications-panel');
+        const opening = panel.style.display === 'none';
+        panel.style.display = opening ? 'block' : 'none';
+        if (opening) refreshNotifications();
+      });
+
+      document.getElementById('notifications-mark-read').addEventListener('click', markNotificationsRead);
+
+      document.getElementById('notifications-clear').addEventListener('click', async () => {
+        notifications = [];
+        renderNotifications();
+        try {
+          await fetch('/api/alerts/notifications/clear', { method: 'POST' });
+        } catch (err) {
+          console.error(err);
+        }
+      });
+
+      document.addEventListener('click', (event) => {
+        const panel = document.getElementById('notifications-panel');
+        if (!panel.contains(event.target)) panel.style.display = 'none';
       });
 
       renderFavorites();
       updateFavoriteStar();
       migrateLegacySettings();
       loadHighlightSettings();
+      refreshNotifications();
+      syncWatchlist();
       loadData(currentSymbol);
       loadChart(currentSymbol, currentRange);
+      setInterval(refreshNotifications, NOTIFICATION_POLL_MS);
     </script>
 </body>
 </html>

@@ -28,8 +28,28 @@ Voraussetzung: Python ist installiert (`python --version` zum Prüfen).
 
 Im Terminal, in dem der Server läuft, `Strg + C` drücken.
 
+## Benachrichtigungen bei Filter-Treffern
+
+In den Balken-Einstellungen lässt sich jede gespeicherte Variante mit ☆ als Filter
+**überwachen** — zusammen mit einem Zeitraum (z.B. 10 Jahre). Der Server prüft dann
+alle 5 Minuten jeden überwachten Filter gegen jeden Favoriten-Wert und meldet, sobald
+der Filter im gewählten Chart anschlägt. Das läuft in `server.py`, also **auch bei
+geschlossenem Browser** — der Server muss dafür laufen.
+
+Gemeldet wird nur der *Wechsel* des Zustands, nicht bei jeder Prüfung erneut. Die
+Meldungen erscheinen als Windows-Benachrichtigung, optional per E-Mail und immer in
+der Glocke oben auf der Seite.
+
+### E-Mail einrichten (optional)
+
+`data/mail_config.example.json` nach `data/mail_config.json` kopieren und ausfüllen.
+Bei Gmail/GMX/Web.de ein **App-Passwort** verwenden, nicht das Anmeldepasswort.
+Ohne diese Datei läuft alles weiter, es kommt nur keine Mail. Der Ordner `data/` wird
+nie über HTTP ausgeliefert und ist von der Versionsverwaltung ausgenommen.
+
 ## Dateien
 
 - `index.html` — Oberfläche
-- `server.py` — lokaler Server, holt die Daten und berechnet RSI14 / 200-Tage-Durchschnitt
+- `server.py` — lokaler Server, holt die Daten, berechnet RSI14 / Durchschnitte und überwacht die Filter
+- `data/` — Laufzeitdaten der Überwachung (Watchlist, Benachrichtigungen, Zustand) und die Mail-Zugangsdaten
 - `feargreed_history_2011_2020.csv` — mitgelieferte Fear-&-Greed-Historie 2011–13.07.2020. CNNs eigene API liefert selbst nichts vor dem 14.07.2020 (getestet, HTTP 500 bei früherem Startdatum); für die Zeit davor wird diese Datei genutzt (Quelle: [whit3rabbit/fear-greed-data](https://github.com/whit3rabbit/fear-greed-data), Stand beim Download geprüft gegen CNNs Live-Werte). Ab 14.07.2020 kommen alle Werte live von CNN.

@@ -5,8 +5,13 @@ import bisect
 import calendar
 import csv
 import json
+import os
+import smtplib
+import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -15,6 +20,16 @@ from urllib.request import Request, urlopen
 BASE_DIR = Path(__file__).resolve().parent
 PORT = 8000
 CACHE_TTL_SECONDS = 30
+
+# Alles, was die Überwachung dauerhaft speichert (und die Mail-Zugangsdaten), liegt
+# hier. Der Ordner wird bewusst NICHT über HTTP ausgeliefert (siehe do_GET).
+DATA_DIR = BASE_DIR / "data"
+WATCHLIST_FILE = DATA_DIR / "watchlist.json"       # von der Seite gesetzt: Favoriten + Filter
+NOTIFICATIONS_FILE = DATA_DIR / "notifications.json"
+ALERT_STATE_FILE = DATA_DIR / "alert_state.json"   # zuletzt gemeldeter Zustand je Filter+Wert
+MAIL_CONFIG_FILE = DATA_DIR / "mail_config.json"
+ALERT_INTERVAL_SECONDS = 300
+MAX_NOTIFICATIONS = 200
 
 CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
 # CNNs eigene API liefert ab 14.07.2020 (ihre technische Untergrenze) bis zum 21.01.2021
@@ -50,6 +65,15 @@ CHART_RANGES = {
     "10y": "1wk",
 }
 DEFAULT_CHART_RANGE = "1y"
+# Beschriftung der Zeiträume in Benachrichtigungen (identisch zu den Chart-Knöpfen).
+RANGE_LABELS = {
+    "1d": "Tag",
+    "5d": "Woche",
+    "1mo": "Monat",
+    "1y": "Jahr",
+    "5y": "5 Jahre",
+    "10y": "10 Jahre",
+}
 
 # Für diese Zeiträume wird mehr Historie geladen als angezeigt wird (via period1/period2,
 # da "range=max" bei Yahoo die Granularität stillschweigend vergröbert), damit
@@ -292,7 +316,16 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
     ]
 
     start_index = 0
-    if display_days and all_timestamps:
+    if range_key == "1d" and all_timestamps:
+        # Der Tages-Chart soll am Handelsstart des letzten Handelstages beginnen.
+        # Ein rollierendes 24-Stunden-Fenster würde stattdessen noch den Nachmittag
+        # des Vortages mitzeigen, deshalb nach Börsen-Kalendertag abschneiden.
+        gmt_offset = result.get("meta", {}).get("gmtoffset") or 0
+        last_day = (all_timestamps[-1] + gmt_offset) // 86400
+        start_index = next(
+            (i for i, t in enumerate(all_timestamps) if (t + gmt_offset) // 86400 == last_day), 0
+        )
+    elif display_days and all_timestamps:
         cutoff = all_timestamps[-1] - display_days * 86400
         start_index = next((i for i, t in enumerate(all_timestamps) if t >= cutoff), 0)
 
@@ -429,6 +462,333 @@ def get_fear_greed():
     }
 
 
+# ---------------------------------------------------------------------------
+# Überwachung der Favoriten-Filter
+#
+# Die Seite meldet ihre Favoriten und die als Favorit markierten Filter (samt
+# Zeitraum und Schwellenwerten) an /api/alerts/watchlist. Von da an prüft dieser
+# Server die Kombinationen selbst weiter — auch wenn kein Browser offen ist.
+# Die Signal-Logik ist dieselbe wie im Chart: ein Signal gibt es nur, wenn ALLE
+# im Filter aktivierten Indikatoren am aktuellen Rand in dieselbe Richtung zeigen.
+# ---------------------------------------------------------------------------
+SIGNAL_LABELS = {"green": "Kaufsignal", "red": "Verkaufssignal"}
+# Hält ein Filter ununterbrochen an, gilt das als staerkeres Signal. Bei diesen
+# Dauern (in Tagen, seit dem ersten beobachteten Ausschlag) kommt je EINE
+# zusaetzliche Meldung/Mail. Danach ist Schluss, damit lange Phasen nicht spammen.
+DURATION_MILESTONES_DAYS = [3, 7, 14, 28]
+DURATION_LABELS = {3: "3 Tagen", 7: "1 Woche", 14: "2 Wochen", 28: "4 Wochen"}
+# Muss zu DEFAULT_HIGHLIGHT_SETTINGS in index.html passen: füllt Felder auf, die
+# eine vor der Einführung eines Reglers gespeicherte Variante noch nicht kennt.
+DEFAULT_FILTER_SETTINGS = {
+    "useFearGreed": True,
+    "useRsi": True,
+    "usePma": True,
+    "useSmartDumb": True,
+    "fearGreedBuy": 25,
+    "fearGreedSell": 75,
+    "rsiBuy": 30,
+    "rsiSell": 70,
+    "pmaStdMultiplier": 1,
+    "maDeviationWindow": MA_DEVIATION_WINDOW_DEFAULT,
+    "smartDumbBuy": 50,
+    "smartDumbSell": -50,
+}
+INDICATOR_ENABLED_KEY = {
+    "feargreed": "useFearGreed",
+    "smartdumb": "useSmartDumb",
+    "rsi": "useRsi",
+    "pma": "usePma",
+}
+
+_file_lock = threading.Lock()
+
+
+def read_json_file(path, fallback):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return fallback
+
+
+def write_json_file(path, value):
+    DATA_DIR.mkdir(exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(path)
+
+
+def forward_filled(times, values, timestamp):
+    """Letzter bekannter Wert zu einem Zeitpunkt (Fear & Greed täglich, COT wöchentlich)."""
+    index = bisect.bisect_right(times, timestamp) - 1
+    return values[index] if index >= 0 else None
+
+
+def cumulative_trend(series):
+    """Laufender Durchschnitt series[0..i] — dieselbe Trendlinie wie im Chart."""
+    result = []
+    total, count = 0.0, 0
+    for value in series or []:
+        if value is not None:
+            total += value
+            count += 1
+        result.append(total / count if count else None)
+    return result
+
+
+def evaluate_signal(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
+    """'green', 'red' oder None für den letzten Datenpunkt einer Kurshistorie."""
+    timestamps = data.get("timestamps") or []
+    if not timestamps:
+        return None
+    enabled = [key for key, flag in INDICATOR_ENABLED_KEY.items() if settings.get(flag)]
+    if not enabled:
+        return None
+
+    index = len(timestamps) - 1
+    timestamp = timestamps[index]
+
+    def classify(buy, sell):
+        return "green" if buy else ("red" if sell else None)
+
+    signals = {}
+
+    score = forward_filled(fg_times, fg_scores, timestamp)
+    if score is not None:
+        signals["feargreed"] = classify(
+            score <= settings["fearGreedBuy"], score >= settings["fearGreedSell"]
+        )
+
+    spread = forward_filled(sd_times, sd_spreads, timestamp)
+    if spread is not None:
+        signals["smartdumb"] = classify(
+            spread >= settings["smartDumbBuy"], spread <= settings["smartDumbSell"]
+        )
+
+    rsi = (data.get("rsi") or [None])[index]
+    if rsi is not None:
+        signals["rsi"] = classify(rsi <= settings["rsiBuy"], rsi >= settings["rsiSell"])
+
+    price_vs_ma = data.get("priceVsMaPct") or []
+    std = data.get("priceVsMaPctStd")
+    if price_vs_ma and price_vs_ma[index] is not None and std is not None:
+        trend = cumulative_trend(price_vs_ma)[index]
+        if trend is not None:
+            distance = std * settings["pmaStdMultiplier"]
+            signals["pma"] = classify(
+                price_vs_ma[index] < trend - distance, price_vs_ma[index] > trend + distance
+            )
+
+    # Fehlende Daten zählen wie "kein Signal" — dann schlägt der Filter nicht an.
+    for signal_type in ("green", "red"):
+        if all(signals.get(key) == signal_type for key in enabled):
+            return signal_type
+    return None
+
+
+def send_windows_toast(title, body):
+    """Windows-Benachrichtigung über die Bordmittel von PowerShell (ohne Zusatzmodul)."""
+    if os.name != "nt":
+        return
+    script = (
+        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications,"
+        " ContentType = WindowsRuntime] | Out-Null;"
+        "$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
+        "[Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
+        "$x = $t.GetElementsByTagName('text');"
+        "$x.Item(0).AppendChild($t.CreateTextNode($env:ALERT_TITLE)) | Out-Null;"
+        "$x.Item(1).AppendChild($t.CreateTextNode($env:ALERT_BODY)) | Out-Null;"
+        "$toast = [Windows.UI.Notifications.ToastNotification]::new($t);"
+        "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("
+        "'{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'"
+        ").Show($toast)"
+    )
+    env = dict(os.environ, ALERT_TITLE=title, ALERT_BODY=body)
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            env=env, capture_output=True, timeout=20, check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"Windows-Benachrichtigung fehlgeschlagen: {exc}")
+
+
+def send_mail(title, body):
+    """Optionaler Mailversand. Ohne data/mail_config.json passiert schlicht nichts."""
+    config = read_json_file(MAIL_CONFIG_FILE, None)
+    if not config or not config.get("host") or not config.get("to"):
+        return
+    message = EmailMessage()
+    message["Subject"] = title
+    message["From"] = config.get("from") or config.get("user")
+    message["To"] = config["to"]
+    message.set_content(body)
+    port = int(config.get("port", 465))
+    # "ssl" (üblich auf Port 465), "starttls" (üblich auf 587) oder "none".
+    security = config.get("security") or ("ssl" if port == 465 else "starttls")
+    try:
+        server = (smtplib.SMTP_SSL if security == "ssl" else smtplib.SMTP)(
+            config["host"], port, timeout=30
+        )
+        with server:
+            if security == "starttls":
+                server.starttls()
+            if config.get("user"):
+                server.login(config["user"], config.get("password", ""))
+            server.send_message(message)
+    except (OSError, smtplib.SMTPException) as exc:
+        print(f"Mailversand fehlgeschlagen: {exc}")
+
+
+def notification_text(entry):
+    label = RANGE_LABELS.get(entry["range"], entry["range"])
+    signal = SIGNAL_LABELS.get(entry["type"], "Signal")
+    name = entry.get("name") or entry["symbol"]
+    duration = entry.get("sustainedLabel")
+    if duration:
+        title = f"Anhaltendes {signal} (seit {duration}): {name}"
+        body = (
+            f"Filter „{entry['filter']}“ schlägt seit {duration} ununterbrochen im "
+            f"{label}-Chart an ({entry['symbol']}). Ein so lang anhaltendes Signal gilt als besonders stark."
+        )
+    else:
+        title = f"{signal}: {name}"
+        body = f"Filter „{entry['filter']}“ schlägt im {label}-Chart an ({entry['symbol']})."
+    return title, body
+
+
+def normalize_state_entry(value):
+    """Zustand je Filter+Zeitfenster+Wert. Alt: reiner String (nur das Signal),
+    neu: {signal, since, notifiedDays} inkl. Startzeit und schon gemeldeten Meilensteinen."""
+    if isinstance(value, dict):
+        return {
+            "signal": value.get("signal", "none"),
+            "since": value.get("since"),
+            "notifiedDays": value.get("notifiedDays") or [],
+        }
+    if isinstance(value, str):
+        return {"signal": value, "since": None, "notifiedDays": []}
+    return {"signal": "none", "since": None, "notifiedDays": []}
+
+
+def store_notifications(entries):
+    with _file_lock:
+        existing = read_json_file(NOTIFICATIONS_FILE, [])
+        if not isinstance(existing, list):
+            existing = []
+        write_json_file(NOTIFICATIONS_FILE, (entries + existing)[:MAX_NOTIFICATIONS])
+
+
+def run_alert_check():
+    """Ein Durchlauf: jeder überwachte Filter gegen jeden Favoriten."""
+    watchlist = read_json_file(WATCHLIST_FILE, {}) or {}
+    favorites = watchlist.get("favorites") or []
+    filters = watchlist.get("filters") or []
+    if not favorites or not filters:
+        return []
+
+    fear_greed = cached("fear_greed", CACHE_TTL_SECONDS, get_fear_greed)
+    smart_dumb = cached("smart_dumb", COT_CACHE_TTL_SECONDS, get_smart_dumb_money)
+    fg_history = fear_greed.get("history") or []
+    sd_history = (smart_dumb or {}).get("history") or []
+    fg_times = [p["t"] for p in fg_history]
+    fg_scores = [p["score"] for p in fg_history]
+    sd_times = [p["t"] for p in sd_history]
+    sd_spreads = [p["spread"] for p in sd_history]
+
+    previous = read_json_file(ALERT_STATE_FILE, {}) or {}
+    current = dict(previous)
+    fresh = []
+
+    for entry in filters:
+        name = entry.get("name")
+        if not name:
+            continue
+        settings = {**DEFAULT_FILTER_SETTINGS, **(entry.get("settings") or {})}
+        # Ein Filter kann mehrere Zeitfenster überwachen (z.B. 5 und 10 Jahre);
+        # ältere Stände hatten nur ein einzelnes "range".
+        raw_ranges = entry.get("ranges")
+        if not isinstance(raw_ranges, list):
+            raw_ranges = [entry.get("range")]
+        range_keys = [r for r in raw_ranges if r in CHART_RANGES]
+        if not range_keys:
+            range_keys = [DEFAULT_CHART_RANGE]
+        ma_window = max(MA_WINDOW_MIN, min(MA_WINDOW_MAX, int(settings["maDeviationWindow"])))
+
+        for range_key in range_keys:
+            for favorite in favorites:
+                symbol = (favorite.get("symbol") or "").strip()
+                if not symbol:
+                    continue
+                key = f"{name}|{range_key}|{symbol}"
+                try:
+                    data = cached(
+                        ("history", symbol, range_key, ma_window), CACHE_TTL_SECONDS,
+                        lambda s=symbol, r=range_key: get_history(s, r, ma_window),
+                    )
+                    signal = evaluate_signal(
+                        data, settings, fg_times, fg_scores, sd_times, sd_spreads
+                    )
+                except Exception as exc:
+                    # Alten Zustand behalten: sonst käme die Meldung beim nächsten
+                    # erfolgreichen Durchlauf ein zweites Mal.
+                    print(f"Prüfung {key} fehlgeschlagen: {exc}")
+                    continue
+
+                prev = normalize_state_entry(previous.get(key))
+                now = int(time.time())
+
+                def make_note(sustained_days=None):
+                    note = {
+                        "ts": now * 1000,
+                        "symbol": symbol,
+                        "name": favorite.get("name") or symbol,
+                        "filter": name,
+                        "range": range_key,
+                        "type": signal,
+                        "read": False,
+                    }
+                    if sustained_days is not None:
+                        note["sustainedDays"] = sustained_days
+                        note["sustainedLabel"] = DURATION_LABELS.get(sustained_days, f"{sustained_days} Tagen")
+                    return note
+
+                if not signal:
+                    current[key] = {"signal": "none", "since": None, "notifiedDays": []}
+                elif prev["signal"] != signal:
+                    # Neuer Ausschlag (oder Richtungswechsel Kauf<->Verkauf): sofort melden,
+                    # Uhr für die Dauer-Meilensteine neu starten.
+                    current[key] = {"signal": signal, "since": now, "notifiedDays": []}
+                    fresh.append(make_note())
+                else:
+                    # Unverändert am Ausschlagen: nur beim Überschreiten einer Dauer-Schwelle melden.
+                    since = prev["since"] or now
+                    notified = list(prev["notifiedDays"])
+                    elapsed_days = (now - since) / 86400
+                    for threshold in DURATION_MILESTONES_DAYS:
+                        if threshold not in notified and elapsed_days >= threshold:
+                            notified.append(threshold)
+                            fresh.append(make_note(sustained_days=threshold))
+                    current[key] = {"signal": signal, "since": since, "notifiedDays": notified}
+
+    write_json_file(ALERT_STATE_FILE, current)
+    if fresh:
+        store_notifications(fresh)
+        for item in fresh:
+            title, body = notification_text(item)
+            send_windows_toast(title, body)
+            send_mail(title, body)
+    return fresh
+
+
+def alert_loop():
+    while True:
+        try:
+            run_alert_check()
+        except Exception as exc:
+            print(f"Überwachung fehlgeschlagen: {exc}")
+        time.sleep(ALERT_INTERVAL_SECONDS)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
@@ -488,6 +848,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=502)
             return
 
+        if parsed.path == "/api/alerts/notifications":
+            self._send_json({
+                "notifications": read_json_file(NOTIFICATIONS_FILE, []),
+                "watchlist": read_json_file(WATCHLIST_FILE, {}),
+                "mailConfigured": bool(read_json_file(MAIL_CONFIG_FILE, None)),
+                "intervalSeconds": ALERT_INTERVAL_SECONDS,
+            })
+            return
+
         if parsed.path == "/api/search":
             search_term = query.get("q", [""])[0].strip()
             if len(search_term) < 2:
@@ -507,7 +876,12 @@ class Handler(BaseHTTPRequestHandler):
             path = "/index.html"
         file_path = (BASE_DIR / path.lstrip("/")).resolve()
 
+        # data/ enthält u.a. die Mail-Zugangsdaten und wird nie ausgeliefert.
         if BASE_DIR not in file_path.parents and file_path != BASE_DIR:
+            self.send_response(403)
+            self.end_headers()
+            return
+        if file_path == DATA_DIR or DATA_DIR in file_path.parents:
             self.send_response(403)
             self.end_headers()
             return
@@ -524,10 +898,71 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_json_body(self):
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            return None
+        if length <= 0:
+            return None
+        try:
+            return json.loads(self.rfile.read(length).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+
+        # Die Seite meldet hier ihre Favoriten und die überwachten Filter an. Ab
+        # dann prüft der Server sie weiter, auch ohne offenen Browser.
+        if parsed.path == "/api/alerts/watchlist":
+            payload = self._read_json_body()
+            if not isinstance(payload, dict):
+                self._send_json({"error": "ungültige Daten"}, status=400)
+                return
+            write_json_file(WATCHLIST_FILE, {
+                "favorites": payload.get("favorites") or [],
+                "filters": payload.get("filters") or [],
+                "updated": int(time.time()),
+            })
+            self._send_json({"ok": True})
+            return
+
+        if parsed.path == "/api/alerts/notifications/read":
+            with _file_lock:
+                entries = read_json_file(NOTIFICATIONS_FILE, [])
+                write_json_file(NOTIFICATIONS_FILE, [{**e, "read": True} for e in entries])
+            self._send_json({"ok": True})
+            return
+
+        if parsed.path == "/api/alerts/notifications/clear":
+            with _file_lock:
+                write_json_file(NOTIFICATIONS_FILE, [])
+            self._send_json({"ok": True})
+            return
+
+        # Sofort prüfen (z.B. direkt nach dem Markieren eines Filters).
+        if parsed.path == "/api/alerts/check":
+            try:
+                fresh = run_alert_check()
+                self._send_json({"new": len(fresh)})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=502)
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
 
 def main():
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    threading.Thread(target=alert_loop, daemon=True).start()
+    watched = len((read_json_file(WATCHLIST_FILE, {}) or {}).get("filters") or [])
     print(f"Server laeuft auf http://127.0.0.1:{PORT}")
+    print(
+        f"Ueberwachung aktiv: {watched} Filter, Pruefung alle {ALERT_INTERVAL_SECONDS // 60} Minuten"
+        + (" (Mailversand konfiguriert)" if MAIL_CONFIG_FILE.is_file() else " (ohne Mailversand)")
+    )
     server.serve_forever()
 
 

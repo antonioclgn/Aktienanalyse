@@ -1,0 +1,5 @@
+__pycache__/
+
+# Laufzeitdaten der Ueberwachung und die Mail-Zugangsdaten bleiben lokal.
+data/*.json
+!data/mail_config.example.json
