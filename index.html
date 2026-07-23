@@ -6,6 +6,26 @@
 <title>Aktienanalyse</title>
 <style>
   body { margin: 0; }
+
+  @media (max-width: 700px) {
+    .dashboard-layout {
+      flex-direction: column;
+    }
+
+    .sidebar {
+      width: 100% !important;
+      min-width: 0 !important;
+      border-left: 0 !important;
+      border-top: 1px solid #ccc;
+      position: static !important;
+      height: auto !important;
+      overflow: visible !important;
+    }
+
+    .bar-settings {
+      margin-top: 16px !important;
+    }
+  }
 </style>
 </head>
 <body>
@@ -26,7 +46,7 @@
     </div>
   </div>
 
-  <div style="display: flex; align-items: flex-start;">
+  <div class="dashboard-layout" style="display: flex; align-items: flex-start;">
     <div style="flex: 1; min-width: 0; padding: 8px 16px 8px 8px; box-sizing: border-box;">
 
       <div style="position: relative; max-width: 400px;">
@@ -78,10 +98,10 @@
       <svg id="price-ma-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
     </div>
 
-    <aside style="width: 28vw; min-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column;">
+    <aside class="sidebar" style="width: 28vw; min-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column;">
       <h2 style="font-size: 14px; margin-top: 0;">Favoriten</h2>
       <ul id="favorites-list" style="list-style: none; padding: 0; margin: 0;"></ul>
-      <section style="margin-top: auto; padding-top: 10px; border-top: 1px solid #ccc; min-height: 25vh; font-size: 12px;">
+      <section class="bar-settings" style="margin-top: auto; padding-top: 10px; border-top: 1px solid #ccc; min-height: 25vh; font-size: 12px;">
         <h2 style="font-size: 14px; margin: 0 0 8px;">Balken-Einstellungen</h2>
         <div style="color: #666; margin-bottom: 6px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen. Gilt für alle Werte.</div>
         <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
