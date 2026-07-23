@@ -472,11 +472,27 @@ def get_fear_greed():
 # im Filter aktivierten Indikatoren am aktuellen Rand in dieselbe Richtung zeigen.
 # ---------------------------------------------------------------------------
 SIGNAL_LABELS = {"green": "Kaufsignal", "red": "Verkaufssignal"}
-# Hält ein Filter ununterbrochen an, gilt das als staerkeres Signal. Bei diesen
-# Dauern (in Tagen, seit dem ersten beobachteten Ausschlag) kommt je EINE
-# zusaetzliche Meldung/Mail. Danach ist Schluss, damit lange Phasen nicht spammen.
-DURATION_MILESTONES_DAYS = [3, 7, 14, 28]
-DURATION_LABELS = {3: "3 Tagen", 7: "1 Woche", 14: "2 Wochen", 28: "4 Wochen"}
+# Hält ein Filter ununterbrochen an, gilt das als staerkeres Signal. Gemessen wird
+# in KERZEN seit dem Ausschlag (nicht in Kalendertagen): bei diesen Kerzenzahlen
+# nach dem ersten Ausschlag kommt je EINE zusaetzliche Meldung/Mail. Danach ist
+# Schluss, damit lange Phasen nicht spammen. So bedeutet "1 Woche" im 10-Jahres-
+# Chart (Wochenkerzen) genau 1 Kerze und im Jahres-Chart (Tageskerzen) 7 Kerzen.
+DURATION_MILESTONES_BARS = [1, 2, 3, 7, 14, 24]
+# Wie eine Kerze je Zeitfenster benannt wird (Einzahl, Mehrzahl im Dativ).
+CANDLE_UNITS = {
+    "1d": ("Kerze", "Kerzen"),     # 5-Minuten-Kerzen -> keine saubere Zeiteinheit
+    "5d": ("Kerze", "Kerzen"),     # 30-Minuten-Kerzen
+    "1mo": ("Stunde", "Stunden"),  # Stundenkerzen
+    "1y": ("Tag", "Tagen"),        # Tageskerzen
+    "5y": ("Woche", "Wochen"),     # Wochenkerzen
+    "10y": ("Woche", "Wochen"),
+}
+
+
+def milestone_label(bars, range_key):
+    """z.B. (7, '1y') -> '7 Tagen', (1, '10y') -> '1 Woche'."""
+    singular, plural = CANDLE_UNITS.get(range_key, ("Kerze", "Kerzen"))
+    return f"1 {singular}" if bars == 1 else f"{bars} {plural}"
 # Muss zu DEFAULT_HIGHLIGHT_SETTINGS in index.html passen: füllt Felder auf, die
 # eine vor der Einführung eines Reglers gespeicherte Variante noch nicht kennt.
 DEFAULT_FILTER_SETTINGS = {
@@ -535,54 +551,83 @@ def cumulative_trend(series):
     return result
 
 
-def evaluate_signal(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
-    """'green', 'red' oder None für den letzten Datenpunkt einer Kurshistorie."""
-    timestamps = data.get("timestamps") or []
-    if not timestamps:
-        return None
-    enabled = [key for key, flag in INDICATOR_ENABLED_KEY.items() if settings.get(flag)]
-    if not enabled:
-        return None
+def combined_signal_series(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
+    """Kombiniertes Signal ('green'/'red'/None) für JEDEN Balken der Historie.
 
-    index = len(timestamps) - 1
-    timestamp = timestamps[index]
+    Ein Balken ist grün/rot nur, wenn alle im Filter aktivierten Indikatoren dort
+    in dieselbe Richtung zeigen. Alle Reihen werden einmal vorberechnet, damit die
+    Auswertung über die ganze Historie günstig bleibt (Grundlage für die Rückrechnung
+    der Ausschlag-Dauer)."""
+    timestamps = data.get("timestamps") or []
+    enabled = [key for key, flag in INDICATOR_ENABLED_KEY.items() if settings.get(flag)]
+    if not timestamps or not enabled:
+        return []
+
+    rsi_all = data.get("rsi") or []
+    price_vs_ma = data.get("priceVsMaPct") or []
+    std = data.get("priceVsMaPctStd")
+    trend = cumulative_trend(price_vs_ma) if price_vs_ma else []
+    distance = std * settings["pmaStdMultiplier"] if std is not None else None
 
     def classify(buy, sell):
         return "green" if buy else ("red" if sell else None)
 
-    signals = {}
+    result = []
+    for index, timestamp in enumerate(timestamps):
+        signals = {}
 
-    score = forward_filled(fg_times, fg_scores, timestamp)
-    if score is not None:
-        signals["feargreed"] = classify(
-            score <= settings["fearGreedBuy"], score >= settings["fearGreedSell"]
-        )
-
-    spread = forward_filled(sd_times, sd_spreads, timestamp)
-    if spread is not None:
-        signals["smartdumb"] = classify(
-            spread >= settings["smartDumbBuy"], spread <= settings["smartDumbSell"]
-        )
-
-    rsi = (data.get("rsi") or [None])[index]
-    if rsi is not None:
-        signals["rsi"] = classify(rsi <= settings["rsiBuy"], rsi >= settings["rsiSell"])
-
-    price_vs_ma = data.get("priceVsMaPct") or []
-    std = data.get("priceVsMaPctStd")
-    if price_vs_ma and price_vs_ma[index] is not None and std is not None:
-        trend = cumulative_trend(price_vs_ma)[index]
-        if trend is not None:
-            distance = std * settings["pmaStdMultiplier"]
-            signals["pma"] = classify(
-                price_vs_ma[index] < trend - distance, price_vs_ma[index] > trend + distance
+        score = forward_filled(fg_times, fg_scores, timestamp)
+        if score is not None:
+            signals["feargreed"] = classify(
+                score <= settings["fearGreedBuy"], score >= settings["fearGreedSell"]
             )
 
-    # Fehlende Daten zählen wie "kein Signal" — dann schlägt der Filter nicht an.
-    for signal_type in ("green", "red"):
-        if all(signals.get(key) == signal_type for key in enabled):
-            return signal_type
-    return None
+        spread = forward_filled(sd_times, sd_spreads, timestamp)
+        if spread is not None:
+            signals["smartdumb"] = classify(
+                spread >= settings["smartDumbBuy"], spread <= settings["smartDumbSell"]
+            )
+
+        rsi = rsi_all[index] if index < len(rsi_all) else None
+        if rsi is not None:
+            signals["rsi"] = classify(rsi <= settings["rsiBuy"], rsi >= settings["rsiSell"])
+
+        pv = price_vs_ma[index] if index < len(price_vs_ma) else None
+        if pv is not None and distance is not None and index < len(trend) and trend[index] is not None:
+            signals["pma"] = classify(pv < trend[index] - distance, pv > trend[index] + distance)
+
+        # Fehlende Daten zählen wie "kein Signal".
+        signal = None
+        for signal_type in ("green", "red"):
+            if all(signals.get(key) == signal_type for key in enabled):
+                signal = signal_type
+                break
+        result.append(signal)
+    return result
+
+
+def evaluate_signal(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
+    """'green', 'red' oder None für den letzten Datenpunkt einer Kurshistorie."""
+    series = combined_signal_series(data, settings, fg_times, fg_scores, sd_times, sd_spreads)
+    return series[-1] if series else None
+
+
+def evaluate_signal_and_run(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
+    """Aktuelles Signal am letzten Balken PLUS die Länge der Serie gleicher Richtung
+    in KERZEN. So kennt der Server die Dauer auch, wenn er ein schon laufendes Signal
+    zum ersten Mal sieht (Rückrechnung aus der Historie)."""
+    series = combined_signal_series(data, settings, fg_times, fg_scores, sd_times, sd_spreads)
+    if not series:
+        return None, 0
+    signal = series[-1]
+    if signal is None:
+        return None, 0
+    run = 1
+    index = len(series) - 2
+    while index >= 0 and series[index] == signal:
+        run += 1
+        index -= 1
+    return signal, run
 
 
 def send_windows_toast(title, body):
@@ -648,7 +693,7 @@ def notification_text(entry):
         title = f"Anhaltendes {signal} (seit {duration}): {name}"
         body = (
             f"Filter „{entry['filter']}“ schlägt seit {duration} ununterbrochen im "
-            f"{label}-Chart an ({entry['symbol']}). Ein so lang anhaltendes Signal gilt als besonders stark."
+            f"{label}-Chart an ({entry['symbol']}). Ein länger anhaltendes Signal gilt als stärker."
         )
     else:
         title = f"{signal}: {name}"
@@ -657,17 +702,18 @@ def notification_text(entry):
 
 
 def normalize_state_entry(value):
-    """Zustand je Filter+Zeitfenster+Wert. Alt: reiner String (nur das Signal),
-    neu: {signal, since, notifiedDays} inkl. Startzeit und schon gemeldeten Meilensteinen."""
+    """Zustand je Filter+Zeitfenster+Wert: {signal, notifiedBars} — welche
+    Kerzen-Meilensteine schon gemeldet wurden. Ältere Stände (reiner String, oder
+    das frühere Tage-Format mit since/notifiedDays) werden verträglich übernommen;
+    bereits gemeldete Tages-Meilensteine gehen dabei verloren (einmaliger Übergang)."""
     if isinstance(value, dict):
         return {
             "signal": value.get("signal", "none"),
-            "since": value.get("since"),
-            "notifiedDays": value.get("notifiedDays") or [],
+            "notifiedBars": value.get("notifiedBars") or [],
         }
     if isinstance(value, str):
-        return {"signal": value, "since": None, "notifiedDays": []}
-    return {"signal": "none", "since": None, "notifiedDays": []}
+        return {"signal": value, "notifiedBars": []}
+    return {"signal": "none", "notifiedBars": []}
 
 
 def store_notifications(entries):
@@ -725,7 +771,7 @@ def run_alert_check():
                         ("history", symbol, range_key, ma_window), CACHE_TTL_SECONDS,
                         lambda s=symbol, r=range_key: get_history(s, r, ma_window),
                     )
-                    signal = evaluate_signal(
+                    signal, run_bars = evaluate_signal_and_run(
                         data, settings, fg_times, fg_scores, sd_times, sd_spreads
                     )
                 except Exception as exc:
@@ -737,7 +783,7 @@ def run_alert_check():
                 prev = normalize_state_entry(previous.get(key))
                 now = int(time.time())
 
-                def make_note(sustained_days=None):
+                def make_note(sustained_bars=None):
                     note = {
                         "ts": now * 1000,
                         "symbol": symbol,
@@ -747,28 +793,35 @@ def run_alert_check():
                         "type": signal,
                         "read": False,
                     }
-                    if sustained_days is not None:
-                        note["sustainedDays"] = sustained_days
-                        note["sustainedLabel"] = DURATION_LABELS.get(sustained_days, f"{sustained_days} Tagen")
+                    if sustained_bars is not None:
+                        note["sustainedBars"] = sustained_bars
+                        note["sustainedLabel"] = milestone_label(sustained_bars, range_key)
                     return note
 
-                if not signal:
-                    current[key] = {"signal": "none", "since": None, "notifiedDays": []}
-                elif prev["signal"] != signal:
-                    # Neuer Ausschlag (oder Richtungswechsel Kauf<->Verkauf): sofort melden,
-                    # Uhr für die Dauer-Meilensteine neu starten.
-                    current[key] = {"signal": signal, "since": now, "notifiedDays": []}
-                    fresh.append(make_note())
-                else:
-                    # Unverändert am Ausschlagen: nur beim Überschreiten einer Dauer-Schwelle melden.
-                    since = prev["since"] or now
-                    notified = list(prev["notifiedDays"])
-                    elapsed_days = (now - since) / 86400
-                    for threshold in DURATION_MILESTONES_DAYS:
-                        if threshold not in notified and elapsed_days >= threshold:
+                def fire_due_milestones(already):
+                    """Meilensteine melden, die die Serie erreicht hat: `bars_since` ist die Zahl
+                    der Kerzen NACH dem ersten Ausschlag (Sofortmeldung = Kerze 1 = bars_since 0)."""
+                    notified = list(already)
+                    bars_since = run_bars - 1
+                    for threshold in DURATION_MILESTONES_BARS:
+                        if threshold not in notified and bars_since >= threshold:
                             notified.append(threshold)
-                            fresh.append(make_note(sustained_days=threshold))
-                    current[key] = {"signal": signal, "since": since, "notifiedDays": notified}
+                            fresh.append(make_note(sustained_bars=threshold))
+                    return notified
+
+                if not signal:
+                    current[key] = {"signal": "none", "notifiedBars": []}
+                elif prev["signal"] != signal:
+                    # Neuer bzw. erstmals gesehener Ausschlag (auch Richtungswechsel Kauf<->Verkauf):
+                    # sofort melden. run_bars kommt aus der Historie, damit ein schon länger
+                    # laufendes Signal die fälligen Meilensteine sofort nachholt.
+                    fresh.append(make_note())
+                    notified = fire_due_milestones([])
+                    current[key] = {"signal": signal, "notifiedBars": notified}
+                else:
+                    # Unverändert am Ausschlagen: nur bei neu erreichten Kerzen-Schwellen melden.
+                    notified = fire_due_milestones(prev["notifiedBars"])
+                    current[key] = {"signal": signal, "notifiedBars": notified}
 
     write_json_file(ALERT_STATE_FILE, current)
     if fresh:
