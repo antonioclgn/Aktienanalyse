@@ -24,10 +24,15 @@ CACHE_TTL_SECONDS = 30
 # Alles, was die Überwachung dauerhaft speichert (und die Mail-Zugangsdaten), liegt
 # hier. Der Ordner wird bewusst NICHT über HTTP ausgeliefert (siehe do_GET).
 DATA_DIR = BASE_DIR / "data"
-WATCHLIST_FILE = DATA_DIR / "watchlist.json"       # von der Seite gesetzt: Favoriten + Filter
+# Geräteübergreifend synchronisiert: Favoriten, gespeicherte Filter-Varianten und
+# welche davon (mit welchen Zeitfenstern) überwacht werden. Der Server ist hierfür
+# die Quelle der Wahrheit; jeder Browser lädt das beim Öffnen und schreibt Änderungen zurück.
+CONFIG_FILE = DATA_DIR / "config.json"
+WATCHLIST_FILE = DATA_DIR / "watchlist.json"       # aus config.json abgeleitet, Basis der Überwachung
 NOTIFICATIONS_FILE = DATA_DIR / "notifications.json"
 ALERT_STATE_FILE = DATA_DIR / "alert_state.json"   # zuletzt gemeldeter Zustand je Filter+Wert
 MAIL_CONFIG_FILE = DATA_DIR / "mail_config.json"
+DEFAULT_PRESET_NAME = "Standard"  # muss zu index.html passen (die implizite Standard-Variante)
 ALERT_INTERVAL_SECONDS = 300
 MAX_NOTIFICATIONS = 200
 
@@ -724,6 +729,28 @@ def store_notifications(entries):
         write_json_file(NOTIFICATIONS_FILE, (entries + existing)[:MAX_NOTIFICATIONS])
 
 
+def derive_watchlist(config):
+    """Aus der geräteübergreifenden Config (Favoriten, Varianten, überwachte Filter)
+    die watchlist.json bauen, die die Überwachung nutzt: je überwachtem Filter die
+    aufgelösten Schwellenwerte der zugehörigen Variante."""
+    favorites = config.get("favorites") or []
+    presets = config.get("presets") or {}
+    watched = config.get("watched") or []
+    filters = []
+    for entry in watched:
+        name = entry.get("name")
+        if not name:
+            continue
+        if name in presets:
+            settings = presets[name]
+        elif name == DEFAULT_PRESET_NAME:
+            settings = DEFAULT_FILTER_SETTINGS  # implizite Standard-Variante
+        else:
+            continue  # Variante gelöscht -> Überwachung entfällt
+        filters.append({"name": name, "ranges": entry.get("ranges") or [], "settings": settings})
+    return {"favorites": favorites, "filters": filters, "updated": int(time.time())}
+
+
 def run_alert_check():
     """Ein Durchlauf: jeder überwachte Filter gegen jeden Favoriten."""
     watchlist = read_json_file(WATCHLIST_FILE, {}) or {}
@@ -901,6 +928,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=502)
             return
 
+        if parsed.path == "/api/config":
+            # Leeres Objekt, solange nichts gespeichert wurde -> der erste Browser mit
+            # Daten sät die Config (siehe pullConfig in index.html).
+            self._send_json(read_json_file(CONFIG_FILE, {}))
+            return
+
         if parsed.path == "/api/alerts/notifications":
             self._send_json({
                 "notifications": read_json_file(NOTIFICATIONS_FILE, []),
@@ -966,8 +999,26 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
 
-        # Die Seite meldet hier ihre Favoriten und die überwachten Filter an. Ab
-        # dann prüft der Server sie weiter, auch ohne offenen Browser.
+        # Geräteübergreifende Config (Favoriten, Varianten, überwachte Filter). Der
+        # Browser schreibt hier bei jeder Änderung; daraus wird zugleich die
+        # watchlist.json für die Überwachung abgeleitet.
+        if parsed.path == "/api/config":
+            payload = self._read_json_body()
+            if not isinstance(payload, dict):
+                self._send_json({"error": "ungültige Daten"}, status=400)
+                return
+            config = {
+                "favorites": payload.get("favorites") or [],
+                "presets": payload.get("presets") or {},
+                "watched": payload.get("watched") or [],
+                "updated": int(time.time()),
+            }
+            write_json_file(CONFIG_FILE, config)
+            write_json_file(WATCHLIST_FILE, derive_watchlist(config))
+            self._send_json({"ok": True})
+            return
+
+        # (Alt-Endpunkt, von der Seite nicht mehr genutzt: direkte Watchlist.)
         if parsed.path == "/api/alerts/watchlist":
             payload = self._read_json_body()
             if not isinstance(payload, dict):

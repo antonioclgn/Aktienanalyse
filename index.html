@@ -263,7 +263,7 @@
         renderPresetOptions();
         // Wird eine überwachte Variante überschrieben, muss der Server die neuen
         // Schwellenwerte kennen.
-        syncWatchlist();
+        pushConfig();
       }
 
       function deleteSelectedPreset() {
@@ -271,8 +271,11 @@
         if (!highlightPresets[name]) return;
         delete highlightPresets[name];
         localStorage.setItem(PRESETS_KEY, JSON.stringify(highlightPresets));
+        // Die gelöschte Variante darf nicht als verwaiste Überwachung zurückbleiben.
+        localStorage.setItem(WATCHED_FILTERS_KEY,
+          JSON.stringify(loadWatchedFilters().filter(f => f.name !== name)));
         renderPresetOptions();
-        syncWatchlist();
+        pushConfig();
       }
 
       function loadHighlightSettings() {
@@ -1152,6 +1155,7 @@
         [favs[index], favs[target]] = [favs[target], favs[index]];
         saveFavorites(favs);
         renderFavorites();
+        pushConfig();
       }
 
       function renderFavorites() {
@@ -1210,7 +1214,7 @@
             saveFavorites(loadFavorites().filter(f => f.symbol !== fav.symbol));
             renderFavorites();
             updateFavoriteStar();
-            syncWatchlist();
+            pushConfig();
           });
 
           actions.appendChild(upBtn);
@@ -1236,7 +1240,7 @@
         }
         renderFavorites();
         updateFavoriteStar();
-        syncWatchlist();
+        pushConfig();
       });
 
       // ---------------------------------------------------------------------
@@ -1260,6 +1264,12 @@
       function loadWatchedFilters() {
         const stored = readStored(WATCHED_FILTERS_KEY, []);
         if (!Array.isArray(stored)) return [];
+        // Verwaiste Überwachungen entfernen: gibt es die Variante nicht mehr (gelöscht),
+        // fällt ihr Eintrag hier heraus. Nur solange überhaupt Varianten bekannt sind —
+        // sonst könnte ein Zwischenstand versehentlich alles verwerfen.
+        const presets = readStored(PRESETS_KEY, {});
+        const hasPresets = Object.keys(presets).length > 0;
+        const known = name => name === DEFAULT_PRESET_NAME || !!presets[name];
         return stored
           .map(entry => {
             // Ältere Stände: nur Name (String) oder ein einzelnes Zeitfenster ({name, range}).
@@ -1271,6 +1281,7 @@
             return { name: entry.name, ranges };
           })
           .filter(entry => entry)
+          .filter(entry => !hasPresets || known(entry.name))
           // Nur bekannte Zeitfenster behalten; ohne gültiges Fenster fällt der Filter raus.
           .map(entry => ({ name: entry.name, ranges: entry.ranges.filter(r => RANGE_LABELS[r]) }))
           .filter(entry => entry.ranges.length);
@@ -1279,7 +1290,7 @@
       function saveWatchedFilters(entries) {
         localStorage.setItem(WATCHED_FILTERS_KEY, JSON.stringify(entries));
         updateWatchUi();
-        syncWatchlist();
+        pushConfig();
       }
 
       function filterSettingsByName(name) {
@@ -1358,16 +1369,47 @@
         if (on) requestCheck();
       }
 
-      // Favoriten und überwachte Filter (mit aufgelösten Schwellenwerten) an den
-      // Server geben — er prüft damit unabhängig von dieser Seite weiter.
-      async function syncWatchlist() {
+      // Geräteübergreifende Synchronisation (Variante A): Der Server ist die Quelle
+      // der Wahrheit für Favoriten, gespeicherte Varianten und überwachte Filter.
+      // Bei jeder Änderung wird der gesamte Stand hochgeladen; daraus leitet der
+      // Server auch die Watchlist für die Überwachung ab.
+      async function pushConfig() {
         try {
-          await fetch('/api/alerts/watchlist', {
+          await fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ favorites: loadFavorites(), filters: watchedFilters() }),
+            body: JSON.stringify({
+              favorites: loadFavorites(),
+              presets: readStored(PRESETS_KEY, {}),
+              watched: loadWatchedFilters(),
+            }),
           });
         } catch (err) {
+          console.error(err);
+        }
+      }
+
+      function configHasData(cfg) {
+        return !!cfg && ((cfg.favorites && cfg.favorites.length)
+          || (cfg.presets && Object.keys(cfg.presets).length)
+          || (cfg.watched && cfg.watched.length));
+      }
+
+      // Beim Öffnen: Server-Stand in den localStorage spiegeln (Server gewinnt).
+      // Ist am Server noch nichts gespeichert, wird der lokale Stand einmalig
+      // hochgeladen — so „sät" das erste Gerät mit Daten die gemeinsame Config.
+      async function pullConfig() {
+        try {
+          const cfg = await (await fetch('/api/config')).json();
+          if (configHasData(cfg)) {
+            if (Array.isArray(cfg.favorites)) localStorage.setItem(FAVORITES_KEY, JSON.stringify(cfg.favorites));
+            if (cfg.presets && typeof cfg.presets === 'object') localStorage.setItem(PRESETS_KEY, JSON.stringify(cfg.presets));
+            if (Array.isArray(cfg.watched)) localStorage.setItem(WATCHED_FILTERS_KEY, JSON.stringify(cfg.watched));
+          } else {
+            await pushConfig();
+          }
+        } catch (err) {
+          // Server nicht erreichbar -> mit dem lokalen Stand weiterarbeiten.
           console.error(err);
         }
       }
@@ -1521,15 +1563,26 @@
         if (!panel.contains(event.target)) panel.style.display = 'none';
       });
 
-      renderFavorites();
-      updateFavoriteStar();
-      migrateLegacySettings();
-      loadHighlightSettings();
-      refreshNotifications();
-      syncWatchlist();
-      loadData(currentSymbol);
-      loadChart(currentSymbol, currentRange);
-      setInterval(refreshNotifications, NOTIFICATION_POLL_MS);
+      // Start: erst den geräteübergreifenden Stand vom Server holen (Variante A),
+      // danach die Oberfläche daraus aufbauen. So sieht jedes Gerät dasselbe.
+      (async function init() {
+        migrateLegacySettings();
+        await pullConfig();
+        loadHighlightSettings();
+        // Verwaiste Überwachungen (deren Variante gelöscht wurde) einmalig entfernen
+        // und den bereinigten Stand zum Server zurückschreiben.
+        const rawWatched = readStored(WATCHED_FILTERS_KEY, []);
+        const cleanedWatched = loadWatchedFilters();
+        if (Array.isArray(rawWatched) && rawWatched.length !== cleanedWatched.length) {
+          saveWatchedFilters(cleanedWatched);
+        }
+        renderFavorites();
+        updateFavoriteStar();
+        refreshNotifications();
+        loadData(currentSymbol);
+        loadChart(currentSymbol, currentRange);
+        setInterval(refreshNotifications, NOTIFICATION_POLL_MS);
+      })();
     </script>
 </body>
 </html>
