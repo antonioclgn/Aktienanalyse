@@ -502,28 +502,66 @@ def milestone_label(bars, range_key):
     """z.B. (7, '1y') -> '7 Tagen', (1, '10y') -> '1 Woche'."""
     singular, plural = CANDLE_UNITS.get(range_key, ("Kerze", "Kerzen"))
     return f"1 {singular}" if bars == 1 else f"{bars} {plural}"
-# Muss zu DEFAULT_HIGHLIGHT_SETTINGS in index.html passen: füllt Felder auf, die
-# eine vor der Einführung eines Reglers gespeicherte Variante noch nicht kennt.
-DEFAULT_FILTER_SETTINGS = {
-    "useFearGreed": True,
-    "useRsi": True,
-    "usePma": True,
-    "useSmartDumb": True,
-    "fearGreedBuy": 25,
-    "fearGreedSell": 75,
-    "rsiBuy": 30,
-    "rsiSell": 70,
-    "pmaStdMultiplier": 1,
-    "maDeviationWindow": MA_DEVIATION_WINDOW_DEFAULT,
-    "smartDumbBuy": 50,
-    "smartDumbSell": -50,
-}
-INDICATOR_ENABLED_KEY = {
-    "feargreed": "useFearGreed",
-    "smartdumb": "useSmartDumb",
-    "rsi": "useRsi",
-    "pma": "usePma",
-}
+# ---------------------------------------------------------------------------
+# Indikator-Registry
+#
+# Jeder Indikator ist EIN Eintrag: Aktiv-Schalter, Standard-Werte und eine Funktion,
+# die pro Kerze 'green'/'red'/None liefert. Einen neuen Indikator fügt man hier (und
+# spiegelbildlich in index.html) hinzu — Defaults, Kombinieren und Überwachung ergeben
+# sich generisch daraus. Bestehende Filter bleiben unberührt: fehlt einem alten Filter
+# der Aktiv-Schalter eines neuen Indikators, ist er per Default aus und zählt nicht mit.
+# ---------------------------------------------------------------------------
+
+def _classify(buy, sell):
+    return "green" if buy else ("red" if sell else None)
+
+
+def _threshold_signals(values, buy_ok, sell_ok):
+    """Pro Kerze: buy_ok(v) -> green, sell_ok(v) -> red, fehlender Wert -> None."""
+    return [None if v is None else _classify(buy_ok(v), sell_ok(v)) for v in values]
+
+
+def _feargreed_signals(ctx, s):
+    return _threshold_signals(ctx["fg"], lambda v: v <= s["fearGreedBuy"], lambda v: v >= s["fearGreedSell"])
+
+
+def _smartdumb_signals(ctx, s):
+    return _threshold_signals(ctx["sd"], lambda v: v >= s["smartDumbBuy"], lambda v: v <= s["smartDumbSell"])
+
+
+def _rsi_signals(ctx, s):
+    return _threshold_signals(ctx["rsi"], lambda v: v <= s["rsiBuy"], lambda v: v >= s["rsiSell"])
+
+
+def _pma_signals(ctx, s):
+    """Abweichung vs. laufendem Durchschnitt außerhalb des Bandes (± n·Std)."""
+    pma, trend, std = ctx["pma"], ctx["trend"], ctx["std"]
+    if std is None:
+        return [None] * len(pma)  # ohne Standardabweichung kein Band -> kein Signal
+    distance = std * s["pmaStdMultiplier"]
+    out = []
+    for i, v in enumerate(pma):
+        if v is not None and i < len(trend) and trend[i] is not None:
+            out.append(_classify(v < trend[i] - distance, v > trend[i] + distance))
+        else:
+            out.append(None)
+    return out
+
+
+INDICATORS = [
+    {"key": "feargreed", "enabled_key": "useFearGreed", "signals": _feargreed_signals,
+     "defaults": {"useFearGreed": True, "fearGreedBuy": 25, "fearGreedSell": 75}},
+    {"key": "smartdumb", "enabled_key": "useSmartDumb", "signals": _smartdumb_signals,
+     "defaults": {"useSmartDumb": True, "smartDumbBuy": 50, "smartDumbSell": -50}},
+    {"key": "rsi", "enabled_key": "useRsi", "signals": _rsi_signals,
+     "defaults": {"useRsi": True, "rsiBuy": 30, "rsiSell": 70}},
+    {"key": "pma", "enabled_key": "usePma", "signals": _pma_signals,
+     "defaults": {"usePma": True, "pmaStdMultiplier": 1, "maDeviationWindow": MA_DEVIATION_WINDOW_DEFAULT}},
+]
+
+# Aus der Registry abgeleitet — nicht von Hand pflegen. Muss zu index.html passen.
+DEFAULT_FILTER_SETTINGS = {k: v for ind in INDICATORS for k, v in ind["defaults"].items()}
+INDICATOR_ENABLED_KEY = {ind["key"]: ind["enabled_key"] for ind in INDICATORS}
 
 _file_lock = threading.Lock()
 
@@ -560,58 +598,45 @@ def cumulative_trend(series):
     return result
 
 
+def _indicator_context(data, timestamps, fg_times, fg_scores, sd_times, sd_spreads):
+    """Alle Reihen, die die Indikator-Signalfunktionen brauchen, einmal vorberechnet
+    (pro Kerze) — Fear & Greed / Smart-Dumb vorwärts-aufgefüllt, RSI/Abweichung direkt."""
+    rsi_all = data.get("rsi") or []
+    price_vs_ma = data.get("priceVsMaPct") or []
+    count = len(timestamps)
+    return {
+        "fg": [forward_filled(fg_times, fg_scores, t) for t in timestamps],
+        "sd": [forward_filled(sd_times, sd_spreads, t) for t in timestamps],
+        "rsi": [rsi_all[i] if i < len(rsi_all) else None for i in range(count)],
+        "pma": [price_vs_ma[i] if i < len(price_vs_ma) else None for i in range(count)],
+        "trend": cumulative_trend(price_vs_ma),
+        "std": data.get("priceVsMaPctStd"),
+    }
+
+
 def combined_signal_series(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
     """Kombiniertes Signal ('green'/'red'/None) für JEDEN Balken der Historie.
 
-    Ein Balken ist grün/rot nur, wenn alle im Filter aktivierten Indikatoren dort
-    in dieselbe Richtung zeigen. Alle Reihen werden einmal vorberechnet, damit die
-    Auswertung über die ganze Historie günstig bleibt (Grundlage für die Rückrechnung
-    der Ausschlag-Dauer)."""
+    Ein Balken ist grün/rot nur, wenn ALLE im Filter aktivierten Indikatoren dort in
+    dieselbe Richtung zeigen. Generisch über die Indikator-Registry — je Indikator
+    eine Signal-Reihe, dann Kerze für Kerze zusammengeführt."""
     timestamps = data.get("timestamps") or []
-    enabled = [key for key, flag in INDICATOR_ENABLED_KEY.items() if settings.get(flag)]
+    enabled = [ind for ind in INDICATORS if settings.get(ind["enabled_key"])]
     if not timestamps or not enabled:
         return []
 
-    rsi_all = data.get("rsi") or []
-    price_vs_ma = data.get("priceVsMaPct") or []
-    std = data.get("priceVsMaPctStd")
-    trend = cumulative_trend(price_vs_ma) if price_vs_ma else []
-    distance = std * settings["pmaStdMultiplier"] if std is not None else None
-
-    def classify(buy, sell):
-        return "green" if buy else ("red" if sell else None)
+    ctx = _indicator_context(data, timestamps, fg_times, fg_scores, sd_times, sd_spreads)
+    per_indicator = [ind["signals"](ctx, settings) for ind in enabled]
 
     result = []
-    for index, timestamp in enumerate(timestamps):
-        signals = {}
-
-        score = forward_filled(fg_times, fg_scores, timestamp)
-        if score is not None:
-            signals["feargreed"] = classify(
-                score <= settings["fearGreedBuy"], score >= settings["fearGreedSell"]
-            )
-
-        spread = forward_filled(sd_times, sd_spreads, timestamp)
-        if spread is not None:
-            signals["smartdumb"] = classify(
-                spread >= settings["smartDumbBuy"], spread <= settings["smartDumbSell"]
-            )
-
-        rsi = rsi_all[index] if index < len(rsi_all) else None
-        if rsi is not None:
-            signals["rsi"] = classify(rsi <= settings["rsiBuy"], rsi >= settings["rsiSell"])
-
-        pv = price_vs_ma[index] if index < len(price_vs_ma) else None
-        if pv is not None and distance is not None and index < len(trend) and trend[index] is not None:
-            signals["pma"] = classify(pv < trend[index] - distance, pv > trend[index] + distance)
-
-        # Fehlende Daten zählen wie "kein Signal".
-        signal = None
-        for signal_type in ("green", "red"):
-            if all(signals.get(key) == signal_type for key in enabled):
-                signal = signal_type
-                break
-        result.append(signal)
+    for i in range(len(timestamps)):
+        bar = [series[i] for series in per_indicator]
+        if all(x == "green" for x in bar):
+            result.append("green")
+        elif all(x == "red" for x in bar):
+            result.append("red")
+        else:
+            result.append(None)
     return result
 
 

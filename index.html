@@ -73,29 +73,8 @@
       </div>
       <svg id="chart" viewBox="0 0 600 220" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
 
-      <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
-        <span>Fear &amp; Greed Index</span>
-        <span id="feargreed-current"></span>
-      </div>
-      <svg id="feargreed-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
-
-      <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
-        <span>Smart Money vs Dumb Money</span>
-        <span id="smartdumb-chart-current"></span>
-      </div>
-      <svg id="smartdumb-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
-
-      <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
-        <span>RSI 14</span>
-        <span id="rsi-chart-current"></span>
-      </div>
-      <svg id="rsi-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
-
-      <div style="max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;">
-        <span id="price-ma-chart-title">Moving Average Deviation</span>
-        <span id="price-ma-chart-current"></span>
-      </div>
-      <svg id="price-ma-chart" viewBox="0 0 600 90" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
+      <!-- Indikator-Charts werden aus der Registry erzeugt (renderIndicatorChartSkeletons). -->
+      <div id="indicator-charts"></div>
     </div>
 
     <aside class="sidebar" style="width: 28vw; min-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column;">
@@ -122,46 +101,8 @@
           </div>
         </div>
         <div id="watched-filters" style="color: #666; font-size: 11px; margin-bottom: 8px;"></div>
-        <label style="display: block; margin-bottom: 5px;">
-          <input id="toggle-highlight-feargreed" type="checkbox">
-          Fear &amp; Greed berücksichtigen
-        </label>
-        <div style="color: #666; margin: 0 0 3px 22px; font-size: 11px;">Standard: kaufen ≤ 25, verkaufen ≥ 75</div>
-        <div style="display: flex; gap: 4px; align-items: center; margin: 0 0 7px 22px;">
-          <label>kaufen ≤ <input id="highlight-feargreed-buy" type="number" min="0" max="100" step="0.1" style="width: 52px;"></label>
-          <label>verkaufen ≥ <input id="highlight-feargreed-sell" type="number" min="0" max="100" step="0.1" style="width: 52px;"></label>
-        </div>
-        <label style="display: block; margin-bottom: 3px;">
-          <input id="toggle-highlight-smartdumb" type="checkbox">
-          Smart/Dumb Money berücksichtigen
-        </label>
-        <div style="color: #666; margin: 0 0 3px 22px; font-size: 11px;">
-          Spread = Smart minus Dumb. Standard: kaufen ≥ 50, verkaufen ≤ −50.
-        </div>
-        <div style="display: flex; gap: 4px; align-items: center; margin: 0 0 7px 22px;">
-          <label>kaufen ≥ <input id="highlight-smartdumb-buy" type="number" min="-100" max="100" step="1" style="width: 52px;"></label>
-          <label>verkaufen ≤ <input id="highlight-smartdumb-sell" type="number" min="-100" max="100" step="1" style="width: 52px;"></label>
-        </div>
-        <label style="display: block; margin-bottom: 3px;">
-          <input id="toggle-highlight-rsi" type="checkbox">
-          RSI berücksichtigen
-        </label>
-        <div style="color: #666; margin: 0 0 3px 22px; font-size: 11px;">Standard: kaufen ≤ 30, verkaufen ≥ 70</div>
-        <div style="display: flex; gap: 4px; align-items: center; margin: 0 0 7px 22px;">
-          <label>kaufen ≤ <input id="highlight-rsi-buy" type="number" step="0.1" style="width: 52px;"></label>
-          <label>verkaufen ≥ <input id="highlight-rsi-sell" type="number" step="0.1" style="width: 52px;"></label>
-        </div>
-        <label style="display: block; margin-bottom: 3px;">
-          <input id="toggle-highlight-pma" type="checkbox">
-          Moving-Average-Abweichung berücksichtigen
-        </label>
-        <div style="color: #666; margin: 0 0 3px 22px; font-size: 11px;">Standard: 150-Tage-Durchschnitt, 1× Standardabweichung</div>
-        <label style="display: block; margin: 0 0 3px 22px;">
-          Durchschnitt über <input id="highlight-ma-window" type="number" min="5" max="400" step="5" style="width: 52px;"> Handelstage
-        </label>
-        <label style="display: block; margin: 0 0 7px 22px;">
-          Bandabstand: <input id="highlight-pma-multiplier" type="number" min="0" step="0.1" style="width: 52px;"> × Standardabweichung
-        </label>
+        <!-- Einstellungen je Indikator werden aus der Registry erzeugt (renderIndicatorSettings). -->
+        <div id="indicator-settings"></div>
       </section>
     </aside>
   </div>
@@ -181,23 +122,149 @@
       const PRESETS_KEY = 'aktienanalyse-highlight-presets';
       const DEFAULT_PRESET_NAME = 'Standard';
       const CUSTOM_PRESET_LABEL = 'Eigene (ungespeichert)';
-      const DEFAULT_HIGHLIGHT_SETTINGS = {
-        useFearGreed: true,
-        useRsi: true,
-        usePma: true,
-        useSmartDumb: true,
-        fearGreedBuy: 25,
-        fearGreedSell: 75,
-        rsiBuy: 30,
-        rsiSell: 70,
-        pmaStdMultiplier: 1,
-        maDeviationWindow: 150,
-        smartDumbBuy: 50,
-        smartDumbSell: -50,
-      };
-      // Das Durchschnittsfenster wird serverseitig gerechnet und braucht daher neue
-      // Daten; alles andere lässt sich aus den vorhandenen Daten neu zeichnen.
-      const SERVER_SIDE_SETTINGS = new Set(['maDeviationWindow']);
+      // ---------------------------------------------------------------------
+      // Indikator-Registry
+      //
+      // Jeder Indikator ist EIN Eintrag: Aktiv-Schalter, Standard-Werte, Einstellungs-
+      // Felder, Chart-Optik und eine build()-Funktion, die pro Kerze Wert + Signal
+      // liefert. Einstellungs-Panel, Charts, Kombinier-Logik und Defaults werden
+      // generisch daraus erzeugt. Einen neuen Indikator fügt man hier (und
+      // spiegelbildlich in server.py) hinzu — sonst nichts.
+      //
+      // Kompatibilität: neue Indikatoren sind per Default AUS. Alte Filter kennen den
+      // Schalter nicht -> normalizeSettings füllt ihn mit "aus" -> er zählt nicht mit.
+      // Bestehende Filter/Benachrichtigungen bleiben also unverändert.
+      // ---------------------------------------------------------------------
+      function sig(buy, sell) { return buy ? 'green' : (sell ? 'red' : null); }
+
+      const INDICATORS = [
+        {
+          key: 'feargreed', enabledKey: 'useFearGreed', title: 'Fear & Greed Index',
+          chartId: 'feargreed-chart', currentId: 'feargreed-current',
+          defaults: { useFearGreed: true, fearGreedBuy: 25, fearGreedSell: 75 },
+          settings: {
+            toggleLabel: 'Fear & Greed berücksichtigen',
+            hint: 'Standard: kaufen ≤ 25, verkaufen ≥ 75',
+            rows: [{ fields: [
+              { key: 'fearGreedBuy', before: 'kaufen ≤ ', min: 0, max: 100, step: 0.1 },
+              { key: 'fearGreedSell', before: 'verkaufen ≥ ', min: 0, max: 100, step: 0.1 },
+            ] }],
+          },
+          ready: () => fearGreedHistory.length > 0,
+          build: (ctx, s) => {
+            const series = ctx.timestamps.map(t => fearGreedScoreAt(t));
+            return {
+              series,
+              signals: series.map(v => (v == null ? null : sig(v <= s.fearGreedBuy, v >= s.fearGreedSell))),
+              chart: { fixedMin: 0, fixedMax: 100, color: 'goldenrod', formatValue: v => v.toFixed(0),
+                       referenceLines: [s.fearGreedBuy, s.fearGreedSell] },
+              // Der aktuelle F&G-Text (Score + Rating) wird aus /api/data gesetzt -> hier nicht überschreiben.
+              currentText: undefined,
+            };
+          },
+        },
+        {
+          key: 'smartdumb', enabledKey: 'useSmartDumb', title: 'Smart Money vs Dumb Money',
+          chartId: 'smartdumb-chart', currentId: 'smartdumb-chart-current',
+          defaults: { useSmartDumb: true, smartDumbBuy: 50, smartDumbSell: -50 },
+          settings: {
+            toggleLabel: 'Smart/Dumb Money berücksichtigen',
+            hint: 'Spread = Smart minus Dumb. Standard: kaufen ≥ 50, verkaufen ≤ −50.',
+            rows: [{ fields: [
+              { key: 'smartDumbBuy', before: 'kaufen ≥ ', min: -100, max: 100, step: 1 },
+              { key: 'smartDumbSell', before: 'verkaufen ≤ ', min: -100, max: 100, step: 1 },
+            ] }],
+          },
+          ready: () => smartDumbHistory.length > 0,
+          build: (ctx, s) => {
+            const spread = ctx.timestamps.map(t => (smartDumbAt(t) || {}).spread ?? null);
+            const latest = smartDumbAt(ctx.timestamps[ctx.timestamps.length - 1]);
+            return {
+              series: spread,
+              signals: spread.map(v => (v == null ? null : sig(v >= s.smartDumbBuy, v <= s.smartDumbSell))),
+              chart: { fixedMin: -100, fixedMax: 100, signedArea: true, color: '#888',
+                       formatValue: v => `${v > 0 ? '+' : ''}${v.toFixed(0)}`,
+                       referenceLines: [{ value: 0, stroke: '#ddd', dashed: false }, s.smartDumbBuy, s.smartDumbSell] },
+              currentText: latest
+                ? `Smart ${latest.smart.toFixed(0)} / Dumb ${latest.dumb.toFixed(0)}`
+                  + ` (Spread ${latest.spread > 0 ? '+' : ''}${latest.spread.toFixed(0)})`
+                : '',
+            };
+          },
+        },
+        {
+          key: 'rsi', enabledKey: 'useRsi', title: 'RSI 14',
+          chartId: 'rsi-chart', currentId: 'rsi-chart-current',
+          defaults: { useRsi: true, rsiBuy: 30, rsiSell: 70 },
+          settings: {
+            toggleLabel: 'RSI berücksichtigen',
+            hint: 'Standard: kaufen ≤ 30, verkaufen ≥ 70',
+            rows: [{ fields: [
+              { key: 'rsiBuy', before: 'kaufen ≤ ', step: 0.1 },
+              { key: 'rsiSell', before: 'verkaufen ≥ ', step: 0.1 },
+            ] }],
+          },
+          ready: () => true,
+          build: (ctx, s) => {
+            const lv = lastValue(ctx.rsi);
+            return {
+              series: ctx.rsi,
+              signals: (ctx.rsi || []).map(v => (v == null ? null : sig(v <= s.rsiBuy, v >= s.rsiSell))),
+              chart: { fixedMin: 0, fixedMax: 100, color: 'purple', formatValue: v => v.toFixed(0),
+                       referenceLines: [s.rsiBuy, s.rsiSell] },
+              currentText: lv != null ? lv.toFixed(1) : '',
+            };
+          },
+        },
+        {
+          key: 'pma', enabledKey: 'usePma', title: 'Moving Average Deviation',
+          chartId: 'price-ma-chart', currentId: 'price-ma-chart-current', titleId: 'price-ma-chart-title',
+          defaults: { usePma: true, pmaStdMultiplier: 1, maDeviationWindow: 150 },
+          settings: {
+            toggleLabel: 'Moving-Average-Abweichung berücksichtigen',
+            hint: 'Standard: 150-Tage-Durchschnitt, 1× Standardabweichung',
+            rows: [
+              { block: true, field: { key: 'maDeviationWindow', before: 'Durchschnitt über ', after: ' Handelstage',
+                                      min: 5, max: 400, step: 5, serverSide: true } },
+              { block: true, field: { key: 'pmaStdMultiplier', before: 'Bandabstand: ', after: ' × Standardabweichung',
+                                      min: 0, step: 0.1 } },
+            ],
+          },
+          ready: () => true,
+          build: (ctx, s) => {
+            const trend = computeTrendLine(ctx.priceVsMaPct);
+            const distance = ctx.priceVsMaPctStd != null ? ctx.priceVsMaPctStd * s.pmaStdMultiplier : null;
+            const upper = (trend && distance != null) ? trend.map(v => (v != null ? v + distance : null)) : null;
+            const lower = (trend && distance != null) ? trend.map(v => (v != null ? v - distance : null)) : null;
+            const overlays = [{ series: trend, color: '#ccc' }];
+            if (upper) overlays.push({ series: upper, color: '#ccc' });
+            if (lower) overlays.push({ series: lower, color: '#ccc' });
+            const signals = (ctx.priceVsMaPct || []).map((v, i) =>
+              (upper && lower && v != null && upper[i] != null && lower[i] != null)
+                ? sig(v < lower[i], v > upper[i]) : null);
+            const lastPma = lastValue(ctx.priceVsMaPct);
+            const avg = ctx.priceVsMaPctAvg;
+            return {
+              series: ctx.priceVsMaPct,
+              signals,
+              chart: { color: 'teal', overlays, formatValue: pmaFormat },
+              currentText: lastPma != null
+                ? `${lastPma > 0 ? '+' : ''}${lastPma.toFixed(2)}%`
+                  + (avg != null ? ` (Ø: ${avg > 0 ? '+' : ''}${avg.toFixed(2)}%)` : '')
+                : '',
+              titleText: `Moving Average Deviation (${ctx.maWindow} Tage)`,
+            };
+          },
+        },
+      ];
+
+      // Alles Weitere aus der Registry abgeleitet — nicht von Hand pflegen.
+      const DEFAULT_HIGHLIGHT_SETTINGS = Object.assign({}, ...INDICATORS.map(ind => ind.defaults));
+      // Felder, die serverseitig gerechnet werden (Chart braucht dann neue Daten).
+      const SERVER_SIDE_SETTINGS = new Set(
+        INDICATORS.flatMap(ind => (ind.settings.rows || [])
+          .flatMap(row => (row.block ? [row.field] : row.fields)))
+          .filter(field => field.serverSide).map(field => field.key));
       let highlightSettings = { ...DEFAULT_HIGHLIGHT_SETTINGS };
       let highlightPresets = {};
 
@@ -305,18 +372,13 @@
           ...readStored(ACTIVE_SETTINGS_KEY, {}),
         };
 
-        document.getElementById('toggle-highlight-feargreed').checked = highlightSettings.useFearGreed;
-        document.getElementById('toggle-highlight-rsi').checked = highlightSettings.useRsi;
-        document.getElementById('toggle-highlight-pma').checked = highlightSettings.usePma;
-        document.getElementById('toggle-highlight-smartdumb').checked = highlightSettings.useSmartDumb;
-        document.getElementById('highlight-feargreed-buy').value = highlightSettings.fearGreedBuy;
-        document.getElementById('highlight-feargreed-sell').value = highlightSettings.fearGreedSell;
-        document.getElementById('highlight-rsi-buy').value = highlightSettings.rsiBuy;
-        document.getElementById('highlight-rsi-sell').value = highlightSettings.rsiSell;
-        document.getElementById('highlight-pma-multiplier').value = highlightSettings.pmaStdMultiplier;
-        document.getElementById('highlight-ma-window').value = highlightSettings.maDeviationWindow;
-        document.getElementById('highlight-smartdumb-buy').value = highlightSettings.smartDumbBuy;
-        document.getElementById('highlight-smartdumb-sell').value = highlightSettings.smartDumbSell;
+        // Generisch aus der Registry: alle Schalter und Zahlenfelder aus den Einstellungen füllen.
+        document.querySelectorAll('#indicator-settings [data-toggle]').forEach(cb => {
+          cb.checked = !!highlightSettings[cb.dataset.toggle];
+        });
+        document.querySelectorAll('#indicator-settings [data-setting]').forEach(inp => {
+          inp.value = highlightSettings[inp.dataset.setting];
+        });
         renderPresetOptions();
       }
 
@@ -335,8 +397,7 @@
         }
       }
 
-      function bindNumberSetting(elementId, settingName) {
-        const input = document.getElementById(elementId);
+      function bindNumberSetting(input, settingName) {
         let lastValue = input.value;
         let pollTimer = null;
 
@@ -360,6 +421,90 @@
         });
         input.addEventListener('blur', stopPolling);
         window.addEventListener('pointerup', stopPolling);
+      }
+
+      // Ein Zahlenfeld (mit Text davor/danach) in ein <label> hängen.
+      function appendSettingField(labelEl, field) {
+        if (field.before) labelEl.appendChild(document.createTextNode(field.before));
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.dataset.setting = field.key;
+        input.style.width = '52px';
+        ['min', 'max', 'step'].forEach(attr => { if (field[attr] != null) input.setAttribute(attr, field[attr]); });
+        labelEl.appendChild(input);
+        if (field.after) labelEl.appendChild(document.createTextNode(field.after));
+      }
+
+      // Einstellungs-Panel komplett aus der Registry erzeugen: je Indikator ein
+      // Schalter, ein Hinweis und seine Zahlenfelder. Danach die Felder verdrahten.
+      function renderIndicatorSettings() {
+        const container = document.getElementById('indicator-settings');
+        container.innerHTML = '';
+        INDICATORS.forEach(ind => {
+          const cfg = ind.settings || {};
+          const toggle = document.createElement('label');
+          toggle.style.cssText = 'display: block; margin-bottom: 3px;';
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.dataset.toggle = ind.enabledKey;
+          toggle.appendChild(cb);
+          toggle.appendChild(document.createTextNode(' ' + (cfg.toggleLabel || ind.title)));
+          container.appendChild(toggle);
+
+          if (cfg.hint) {
+            const hint = document.createElement('div');
+            hint.style.cssText = 'color: #666; margin: 0 0 3px 22px; font-size: 11px;';
+            hint.textContent = cfg.hint;
+            container.appendChild(hint);
+          }
+
+          (cfg.rows || []).forEach(row => {
+            if (row.block) {
+              const label = document.createElement('label');
+              label.style.cssText = 'display: block; margin: 0 0 7px 22px;';
+              appendSettingField(label, row.field);
+              container.appendChild(label);
+            } else {
+              const line = document.createElement('div');
+              line.style.cssText = 'display: flex; gap: 4px; align-items: center; margin: 0 0 7px 22px;';
+              (row.fields || []).forEach(field => {
+                const label = document.createElement('label');
+                appendSettingField(label, field);
+                line.appendChild(label);
+              });
+              container.appendChild(line);
+            }
+          });
+        });
+
+        container.querySelectorAll('[data-toggle]').forEach(cb => {
+          cb.addEventListener('change', event => updateHighlightSetting(cb.dataset.toggle, event.target.checked));
+        });
+        container.querySelectorAll('[data-setting]').forEach(inp => bindNumberSetting(inp, inp.dataset.setting));
+      }
+
+      // Für jeden Indikator seinen Chart-Rahmen (Titel, Aktuell-Wert, leeres SVG) anlegen.
+      function renderIndicatorChartSkeletons() {
+        const container = document.getElementById('indicator-charts');
+        container.innerHTML = '';
+        const ns = 'http://www.w3.org/2000/svg';
+        INDICATORS.forEach(ind => {
+          const header = document.createElement('div');
+          header.style.cssText = 'max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;';
+          const title = document.createElement('span');
+          if (ind.titleId) title.id = ind.titleId;
+          title.textContent = ind.title;
+          const current = document.createElement('span');
+          current.id = ind.currentId;
+          header.appendChild(title);
+          header.appendChild(current);
+          const svg = document.createElementNS(ns, 'svg');
+          svg.id = ind.chartId;
+          svg.setAttribute('viewBox', '0 0 600 90');
+          svg.style.cssText = 'max-width: 600px; width: 100%; height: auto; display: block;';
+          container.appendChild(header);
+          container.appendChild(svg);
+        });
       }
 
       function formatTick(date, rangeKey) {
@@ -552,75 +697,30 @@
         return result;
       }
 
-      // Zustand JEDES Indikators einzeln an einem Zeitpunkt: 'green' (Kaufbedingung
-      // erfüllt), 'red' (Verkaufsbedingung erfüllt) oder null. null steht auch für
-      // "deaktiviert" oder "keine Daten" — beides zählt nicht als Signal.
-      // `settings` ist standardmäßig die angezeigte Einstellung; die Überwachung im
-      // Hintergrund reicht stattdessen die Werte des jeweiligen Filters herein.
-      function indicatorSignalsAt(i, timestamps, rsi, pma, pmaUpper, pmaLower, settings = highlightSettings) {
-        const fg = fearGreedScoreAt(timestamps[i]);
-        const smartDumb = smartDumbAt(timestamps[i]);
-        const classify = (buy, sell) => (buy ? 'green' : (sell ? 'red' : null));
-        const pmaReady = pma && pma[i] != null
-          && pmaUpper && pmaUpper[i] != null && pmaLower && pmaLower[i] != null;
-        return {
-          feargreed: settings.useFearGreed && fg != null
-            ? classify(fg <= settings.fearGreedBuy, fg >= settings.fearGreedSell)
-            : null,
-          // Profis long und Kleinanleger short -> Kaufsignal, umgekehrt Verkaufssignal.
-          smartdumb: settings.useSmartDumb && smartDumb != null
-            ? classify(
-              smartDumb.spread >= settings.smartDumbBuy,
-              smartDumb.spread <= settings.smartDumbSell)
-            : null,
-          rsi: settings.useRsi && rsi && rsi[i] != null
-            ? classify(rsi[i] <= settings.rsiBuy, rsi[i] >= settings.rsiSell)
-            : null,
-          pma: settings.usePma && pmaReady
-            ? classify(pma[i] < pmaLower[i], pma[i] > pmaUpper[i])
-            : null,
-        };
+      // Baut für JEDEN Indikator Wert- und Signal-Reihe (plus Chart-/Text-Infos).
+      // Nicht bereite Indikatoren (fehlende Daten) liefern null und zählen als "kein Signal".
+      function buildIndicators(ctx, settings) {
+        const built = {};
+        INDICATORS.forEach(ind => { built[ind.key] = ind.ready() ? ind.build(ctx, settings) : null; });
+        return built;
       }
 
-      const ENABLED_SETTING_BY_INDICATOR = {
-        feargreed: 'useFearGreed',
-        smartdumb: 'useSmartDumb',
-        rsi: 'useRsi',
-        pma: 'usePma',
-      };
-
-      // Gemeinsames Signal: nur wenn ALLE aktivierten Indikatoren in dieselbe
-      // Richtung zeigen (sonst null). Dieselbe Regel gilt für die Balken im Chart
-      // und für die Überwachung der Filter im Hintergrund.
-      function combinedSignal(signals, settings = highlightSettings) {
-        const enabled = Object.keys(ENABLED_SETTING_BY_INDICATOR)
-          .filter(key => settings[ENABLED_SETTING_BY_INDICATOR[key]]);
+      // Gemeinsames Signal an Balken i: nur wenn ALLE aktivierten Indikatoren dort in
+      // dieselbe Richtung zeigen (sonst null). Dieselbe Regel wie die Überwachung im Server.
+      function combinedSignalAt(built, i, settings) {
+        const enabled = INDICATORS.filter(ind => settings[ind.enabledKey]);
         if (!enabled.length) return null;
-        if (enabled.every(key => signals[key] === 'green')) return 'green';
-        if (enabled.every(key => signals[key] === 'red')) return 'red';
+        const at = ind => (built[ind.key] ? built[ind.key].signals[i] : null) || null;
+        if (enabled.every(ind => at(ind) === 'green')) return 'green';
+        if (enabled.every(ind => at(ind) === 'red')) return 'red';
         return null;
-      }
-
-      // Trendlinie der Moving-Average-Abweichung samt oberem/unterem Band. Das Band
-      // fehlt (null), solange keine Standardabweichung vorliegt.
-      function computePmaBands(priceVsMaPct, std, multiplier) {
-        const trend = computeTrendLine(priceVsMaPct);
-        const distance = std != null ? std * multiplier : null;
-        if (!trend || distance == null) return { trend, upper: null, lower: null };
-        return {
-          trend,
-          upper: trend.map(v => (v != null ? v + distance : null)),
-          lower: trend.map(v => (v != null ? v - distance : null)),
-        };
       }
 
       // Findet zusammenhängende Zeiträume, in denen gleichzeitig gilt:
       // grün = alle aktivierten Indikatoren zeigen ein Kaufsignal
       // rot  = alle aktivierten Indikatoren zeigen ein Verkaufssignal
-      function computeHighlightRanges(timestamps, rsi, pma, pmaUpper, pmaLower) {
-        const types = timestamps.map((t, i) => combinedSignal(
-          indicatorSignalsAt(i, timestamps, rsi, pma, pmaUpper, pmaLower)
-        ));
+      function computeHighlightRanges(built, timestamps, settings) {
+        const types = timestamps.map((t, i) => combinedSignalAt(built, i, settings));
 
         const ranges = [];
         let start = 0, current = types.length ? types[0] : null;
@@ -641,54 +741,6 @@
           }
         }
         return ranges;
-      }
-
-      function renderFearGreedChart(rangeKey, highlightRanges, timestamps) {
-        if (!fearGreedHistory.length || !timestamps || !timestamps.length) return;
-        // Fear&Greed auf EXAKT dieselben X-Positionen wie die anderen Charts legen:
-        // für jeden Kurs-Zeitpunkt den zuletzt bekannten (täglichen) Fear&Greed-Wert einsetzen.
-        // Dadurch teilt dieser Chart dieselbe (index-basierte) Achse und beginnt/endet
-        // bündig mit Kurs, RSI und Moving Average Deviation.
-        const series = timestamps.map(t => fearGreedScoreAt(t));
-
-        renderIndicatorChart(
-          'feargreed-chart',
-          series,
-          timestamps,
-          rangeKey,
-          {
-            fixedMin: 0, fixedMax: 100,
-            referenceLines: [highlightSettings.fearGreedBuy, highlightSettings.fearGreedSell],
-            color: 'goldenrod',
-            formatValue: v => v.toFixed(0), padLeft: sharedChartPadLeft, highlightRanges,
-          }
-        );
-      }
-
-      function renderSmartDumbChart(rangeKey, highlightRanges, timestamps) {
-        if (!smartDumbHistory.length || !timestamps || !timestamps.length) return;
-        // Statt zweier sich kreuzender Linien nur den Spread (Smart minus Dumb) als
-        // graue Linie: die Fläche darunter zeigt grün/rot, wer gerade dominiert.
-        const spread = timestamps.map(t => (smartDumbAt(t) || {}).spread ?? null);
-
-        renderIndicatorChart('smartdumb-chart', spread, timestamps, rangeKey, {
-          fixedMin: -100, fixedMax: 100,
-          signedArea: true,
-          referenceLines: [
-            { value: 0, stroke: '#ddd', dashed: false },
-            highlightSettings.smartDumbBuy,
-            highlightSettings.smartDumbSell,
-          ],
-          color: '#888',
-          formatValue: v => `${v > 0 ? '+' : ''}${v.toFixed(0)}`,
-          padLeft: sharedChartPadLeft, highlightRanges,
-        });
-
-        const latest = smartDumbAt(timestamps[timestamps.length - 1]);
-        document.getElementById('smartdumb-chart-current').textContent = latest
-          ? `Smart ${latest.smart.toFixed(0)} / Dumb ${latest.dumb.toFixed(0)}`
-            + ` (Spread ${latest.spread > 0 ? '+' : ''}${latest.spread.toFixed(0)})`
-          : '';
       }
 
       // Kumulierter (laufender) Durchschnitt: result[i] = Durchschnitt von series[0..i].
@@ -717,12 +769,7 @@
       // Deshalb wird der aktuelle Wert jedes Indikators eingefärbt, sobald DIESER
       // Indikator gerade ausschlägt — bewusst einzeln und nicht nach dem gemeinsamen
       // Balken, damit sofort sichtbar ist, welcher Indikator das Signal verhindert.
-      const CURRENT_VALUE_IDS = {
-        feargreed: 'feargreed-current',
-        smartdumb: 'smartdumb-chart-current',
-        rsi: 'rsi-chart-current',
-        pma: 'price-ma-chart-current',
-      };
+      const CURRENT_VALUE_IDS = Object.fromEntries(INDICATORS.map(ind => [ind.key, ind.currentId]));
 
       function applyCurrentSignalColors(signals) {
         Object.keys(CURRENT_VALUE_IDS).forEach(key => {
@@ -738,40 +785,43 @@
         const data = lastChartData;
         if (!data) return;
 
-        const { trend: pmaTrend, upper: pmaUpper, lower: pmaLower } = computePmaBands(
-          data.priceVsMaPct, data.priceVsMaPctStd, highlightSettings.pmaStdMultiplier
-        );
-        const pmaOverlays = [{ series: pmaTrend, color: '#ccc' }];
-        if (pmaUpper) pmaOverlays.push({ series: pmaUpper, color: '#ccc' });
-        if (pmaLower) pmaOverlays.push({ series: pmaLower, color: '#ccc' });
-
-        const highlightRanges = ((!highlightSettings.usePma) || (pmaUpper && pmaLower))
-          ? computeHighlightRanges(data.timestamps, data.rsi, data.priceVsMaPct, pmaUpper, pmaLower)
-          : [];
+        const ctx = {
+          timestamps: data.timestamps, closes: data.closes, rsi: data.rsi,
+          priceVsMaPct: data.priceVsMaPct, priceVsMaPctStd: data.priceVsMaPctStd,
+          priceVsMaPctAvg: data.priceVsMaPctAvg, maWindow: data.maWindow,
+        };
+        const built = buildIndicators(ctx, highlightSettings);
+        const highlightRanges = computeHighlightRanges(built, data.timestamps, highlightSettings);
 
         renderChart(data.closes, data.timestamps, currentRange, data.movingAverage, sharedChartPadLeft, highlightRanges);
-        document.getElementById('price-ma-chart-title').textContent =
-          `Moving Average Deviation (${data.maWindow} Tage)`;
-        renderIndicatorChart('rsi-chart', data.rsi, data.timestamps, currentRange, {
-          fixedMin: 0, fixedMax: 100,
-          referenceLines: [highlightSettings.rsiBuy, highlightSettings.rsiSell],
-          color: 'purple', formatValue: v => v.toFixed(0),
-          padLeft: sharedChartPadLeft, highlightRanges,
+
+        // Jeden Indikator-Chart aus seinem build()-Ergebnis zeichnen.
+        INDICATORS.forEach(ind => {
+          const b = built[ind.key];
+          if (!b) return;
+          renderIndicatorChart(ind.chartId, b.series, data.timestamps, currentRange,
+            { ...b.chart, padLeft: sharedChartPadLeft, highlightRanges });
+          if (ind.titleId && b.titleText != null) {
+            document.getElementById(ind.titleId).textContent = b.titleText;
+          }
+          // currentText === undefined -> Text nicht anfassen (z.B. F&G kommt aus /api/data).
+          if (b.currentText !== undefined) {
+            document.getElementById(ind.currentId).textContent = b.currentText;
+          }
         });
-        renderIndicatorChart('price-ma-chart', data.priceVsMaPct, data.timestamps, currentRange, {
-          color: 'teal', overlays: pmaOverlays, formatValue: pmaFormat,
-          padLeft: sharedChartPadLeft, highlightRanges,
+
+        // Aktuellen Wert je Indikator einfärben, wenn DIESER (aktivierte) Indikator ausschlägt.
+        const lastIndex = data.timestamps.length - 1;
+        const lastSignals = {};
+        INDICATORS.forEach(ind => {
+          const b = built[ind.key];
+          lastSignals[ind.key] = (b && lastIndex >= 0 && highlightSettings[ind.enabledKey])
+            ? b.signals[lastIndex] : null;
         });
-        renderSmartDumbChart(currentRange, highlightRanges, data.timestamps);
+        applyCurrentSignalColors(lastSignals);
 
         lastChartTimestamps = data.timestamps;
         lastHighlightRanges = highlightRanges;
-        renderFearGreedChart(currentRange, highlightRanges, data.timestamps);
-
-        const lastIndex = data.timestamps.length - 1;
-        applyCurrentSignalColors(lastIndex >= 0
-          ? indicatorSignalsAt(lastIndex, data.timestamps, data.rsi, data.priceVsMaPct, pmaUpper, pmaLower)
-          : null);
       }
 
       function lastValue(series) {
@@ -1102,32 +1152,9 @@
         });
       });
 
-      document.getElementById('toggle-highlight-feargreed').addEventListener('change', (event) => {
-        updateHighlightSetting('useFearGreed', event.target.checked);
-      });
-
-      document.getElementById('toggle-highlight-rsi').addEventListener('change', (event) => {
-        updateHighlightSetting('useRsi', event.target.checked);
-      });
-
-      document.getElementById('toggle-highlight-pma').addEventListener('change', (event) => {
-        updateHighlightSetting('usePma', event.target.checked);
-      });
-
-      document.getElementById('toggle-highlight-smartdumb').addEventListener('change', (event) => {
-        updateHighlightSetting('useSmartDumb', event.target.checked);
-      });
-
-      [
-        ['highlight-feargreed-buy', 'fearGreedBuy'],
-        ['highlight-feargreed-sell', 'fearGreedSell'],
-        ['highlight-rsi-buy', 'rsiBuy'],
-        ['highlight-rsi-sell', 'rsiSell'],
-        ['highlight-pma-multiplier', 'pmaStdMultiplier'],
-        ['highlight-ma-window', 'maDeviationWindow'],
-        ['highlight-smartdumb-buy', 'smartDumbBuy'],
-        ['highlight-smartdumb-sell', 'smartDumbSell'],
-      ].forEach(([elementId, settingName]) => bindNumberSetting(elementId, settingName));
+      // Einstellungs-Panel + Indikator-Charts aus der Registry aufbauen (inkl. Verdrahtung).
+      renderIndicatorSettings();
+      renderIndicatorChartSkeletons();
 
       document.getElementById('preset-select').addEventListener('change', (event) => {
         const name = event.target.value;
