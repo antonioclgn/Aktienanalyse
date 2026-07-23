@@ -1,0 +1,10 @@
+[Unit]
+Description=Aktienanalyse: regelmaessig nach Code-Updates suchen
+
+[Timer]
+OnBootSec=2min          # erster Check 2 Min nach dem Booten
+OnUnitActiveSec=1min    # danach jede Minute
+Persistent=true
+
+[Install]
+WantedBy=timers.target

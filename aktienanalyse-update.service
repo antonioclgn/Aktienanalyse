@@ -1,0 +1,9 @@
+[Unit]
+Description=Aktienanalyse: Code-Update von GitHub holen
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Pfad an deinen Pi anpassen (<pi-user>):
+ExecStart=/home/<pi-user>/Aktienanalyse/update.sh

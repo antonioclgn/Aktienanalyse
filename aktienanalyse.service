@@ -1,0 +1,17 @@
+[Unit]
+Description=Aktienanalyse-Server und Filter-Ueberwachung
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# <pi-user> und den Pfad an deinen Pi anpassen:
+User=<pi-user>
+WorkingDirectory=/home/<pi-user>/Aktienanalyse
+Environment=AKTIENANALYSE_HOST=0.0.0.0
+ExecStart=/usr/bin/python3 /home/<pi-user>/Aktienanalyse/server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

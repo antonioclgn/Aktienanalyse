@@ -18,7 +18,11 @@ from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
 BASE_DIR = Path(__file__).resolve().parent
-PORT = 8000
+# Standardmäßig nur lokal erreichbar. Für den Betrieb auf einem Heimserver (z.B. Pi)
+# HOST auf "0.0.0.0" setzen (Umgebungsvariable AKTIENANALYSE_HOST=0.0.0.0), damit die
+# Seite im Netzwerk erreichbar ist.
+HOST = os.environ.get("AKTIENANALYSE_HOST", "127.0.0.1")
+PORT = int(os.environ.get("AKTIENANALYSE_PORT", "8000"))
 CACHE_TTL_SECONDS = 30
 
 # Alles, was die Überwachung dauerhaft speichert (und die Mail-Zugangsdaten), liegt
@@ -1059,10 +1063,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
     threading.Thread(target=alert_loop, daemon=True).start()
     watched = len((read_json_file(WATCHLIST_FILE, {}) or {}).get("filters") or [])
-    print(f"Server laeuft auf http://127.0.0.1:{PORT}")
+    shown_host = "127.0.0.1" if HOST in ("127.0.0.1", "0.0.0.0") else HOST
+    hint = " (im Netzwerk erreichbar)" if HOST == "0.0.0.0" else ""
+    print(f"Server laeuft auf http://{shown_host}:{PORT}{hint}")
     print(
         f"Ueberwachung aktiv: {watched} Filter, Pruefung alle {ALERT_INTERVAL_SECONDS // 60} Minuten"
         + (" (Mailversand konfiguriert)" if MAIL_CONFIG_FILE.is_file() else " (ohne Mailversand)")
