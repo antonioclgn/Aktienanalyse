@@ -501,27 +501,46 @@ def get_fear_greed():
 # im Filter aktivierten Indikatoren am aktuellen Rand in dieselbe Richtung zeigen.
 # ---------------------------------------------------------------------------
 SIGNAL_LABELS = {"green": "Kaufsignal", "red": "Verkaufssignal"}
-# Hält ein Filter ununterbrochen an, gilt das als staerkeres Signal. Gemessen wird
-# in KERZEN seit dem Ausschlag (nicht in Kalendertagen): bei diesen Kerzenzahlen
-# nach dem ersten Ausschlag kommt je EINE zusaetzliche Meldung/Mail. Danach ist
-# Schluss, damit lange Phasen nicht spammen. So bedeutet "1 Woche" im 10-Jahres-
-# Chart (Wochenkerzen) genau 1 Kerze und im Jahres-Chart (Tageskerzen) 7 Kerzen.
-DURATION_MILESTONES_BARS = [1, 2, 3, 7, 14, 24]
-# Wie eine Kerze je Zeitfenster benannt wird (Einzahl, Mehrzahl im Dativ).
-CANDLE_UNITS = {
-    "1d": ("Kerze", "Kerzen"),     # 5-Minuten-Kerzen -> keine saubere Zeiteinheit
-    "5d": ("Kerze", "Kerzen"),     # 30-Minuten-Kerzen
-    "1mo": ("Stunde", "Stunden"),  # Stundenkerzen
-    "1y": ("Tag", "Tagen"),        # Tageskerzen
-    "5y": ("Woche", "Wochen"),     # Wochenkerzen
-    "10y": ("Woche", "Wochen"),
+# Hält ein Filter ununterbrochen an, gilt das als staerkeres Signal. Bei diesen
+# Vielfachen der Zeiteinheit des Zeitfensters kommt je EINE zusaetzliche Meldung/Mail.
+# Danach ist Schluss, damit lange Phasen nicht spammen.
+DURATION_MILESTONES = [1, 2, 3, 7, 14, 24]
+# Gemessen wird auf der UHR ab dem ersten Ausschlag — nicht in Kerzen. Kerzen entstehen
+# zur Boerseneroeffnung, dann kaeme jede Tages-Meldung um 09:00 bzw. 15:30 und alle Werte
+# gleichzeitig; so kommt sie zur Uhrzeit des Ausschlags (12:03 -> naechster Tag ~12:03).
+#
+# Die Uhr laeuft NUR waehrend der Handelszeit: nachts (23:00-07:30), an Wochenenden und an
+# Feiertagen steht sie still. Damit kommt keine Meldung, wenn sich an der Boerse ohnehin
+# nichts bewegen kann — und die Uhrzeit des Ausschlags bleibt trotzdem erhalten, weil das
+# Nachtfenster jeden Tag gleich lang ist. Feiertage erkennt der Server am Kerzenraster des
+# Wertes selbst (siehe trading_days_from); es gibt keine Feiertagsliste zu pflegen.
+QUIET_END_SECONDS = 7 * 3600 + 30 * 60      # ab 07:30 wird gemeldet
+QUIET_START_SECONDS = 23 * 3600             # ab 23:00 ist Ruhe
+OPEN_SECONDS_PER_DAY = QUIET_START_SECONDS - QUIET_END_SECONDS   # 15,5 Stunden Handelszeit
+DURATION_UNITS = {                          # (Handelszeit-Sekunden, Einzahl, Mehrzahl im Dativ)
+    "1d": (3600, "Stunde", "Stunden"),      # 5-Minuten-Kerzen -> Stunden als Einheit
+    "5d": (3600, "Stunde", "Stunden"),      # 30-Minuten-Kerzen
+    "1mo": (3600, "Stunde", "Stunden"),     # Stundenkerzen
+    "1y": (OPEN_SECONDS_PER_DAY, "Tag", "Tagen"),          # 1 Handelstag
+    "5y": (5 * OPEN_SECONDS_PER_DAY, "Woche", "Wochen"),   # 5 Handelstage -> gleiche
+    "10y": (5 * OPEN_SECONDS_PER_DAY, "Woche", "Wochen"),  #   Uhrzeit eine Woche spaeter
 }
+DEFAULT_DURATION_UNIT = (OPEN_SECONDS_PER_DAY, "Tag", "Tagen")
+# Zeitfenster, deren Kerzenraster den Handelskalender weit genug abdeckt, um Feiertage
+# daran zu erkennen. Der Tages-Chart liefert nur den letzten Handelstag, die 5- und
+# 10-Jahres-Charts nur Wochenkerzen — dort entscheidet allein Mo-Fr.
+TRADING_GRID_RANGES = ("5d", "1mo", "1y")
 
 
-def milestone_label(bars, range_key):
+def milestone_label(units, range_key):
     """z.B. (7, '1y') -> '7 Tagen', (1, '10y') -> '1 Woche'."""
-    singular, plural = CANDLE_UNITS.get(range_key, ("Kerze", "Kerzen"))
-    return f"1 {singular}" if bars == 1 else f"{bars} {plural}"
+    _, singular, plural = DURATION_UNITS.get(range_key, DEFAULT_DURATION_UNIT)
+    return f"1 {singular}" if units == 1 else f"{units} {plural}"
+
+
+def milestone_seconds(range_key):
+    """Laenge EINER Einheit des Zeitfensters in Werktags-Sekunden."""
+    return DURATION_UNITS.get(range_key, DEFAULT_DURATION_UNIT)[0]
 # ---------------------------------------------------------------------------
 # Indikator-Registry
 #
@@ -606,6 +625,92 @@ def forward_filled(times, values, timestamp):
     return values[index] if index >= 0 else None
 
 
+def trading_days_from(data, range_key):
+    """Handelstage (als lokale Kalendertage) aus dem Kerzenraster eines Wertes.
+
+    Das ist der echte Handelskalender der Börse dieses Wertes — Feiertage inklusive, ohne
+    eigene Feiertagsliste: an einem Tag ohne Handel liefert Yahoo keine Kerze. Taugt nur
+    für Zeitfenster mit ausreichend weitem Tagesraster (TRADING_GRID_RANGES), sonst None
+    — dann entscheidet allein Mo-Fr."""
+    if range_key not in TRADING_GRID_RANGES:
+        return None
+    days = set()
+    for stamp in data.get("timestamps") or []:
+        local = time.localtime(stamp)
+        days.add((local.tm_year, local.tm_mon, local.tm_mday))
+    return days or None
+
+
+def is_trading_day(local, trading_days):
+    """`local` ist ein time.struct_time. Ohne bekanntes Raster gilt schlicht Mo-Fr."""
+    if trading_days is None:
+        return local.tm_wday < 5
+    return (local.tm_year, local.tm_mon, local.tm_mday) in trading_days
+
+
+def in_trading_window(timestamp, trading_days=None):
+    """Läuft die Dauer-Uhr zu diesem Zeitpunkt? Handelstag und nicht Nachtruhe."""
+    local = time.localtime(timestamp)
+    if not is_trading_day(local, trading_days):
+        return False
+    daytime = local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec
+    return QUIET_END_SECONDS <= daytime < QUIET_START_SECONDS
+
+
+def align_to_trading_window(timestamp, trading_days=None):
+    """Einen Zeitpunkt in die Handelszeit schieben: liegt er nachts, am Wochenende oder an
+    einem Feiertag, zählt die Dauer erst ab dem Beginn des nächsten Meldefensters. Nötig,
+    weil der Beginn einer Serie aus der Historie kommen kann (Wochenkerzen liegen z.B. auf
+    Montag 00:00) — ohne das Verschieben wäre „1 Tag" mal ein ganzer Handelstag und mal
+    nur dessen Rest."""
+    for _ in range(14):                     # genug für Wochenende plus Feiertage
+        local = time.localtime(timestamp)
+        daytime = local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec
+        midnight = timestamp - daytime
+        if is_trading_day(local, trading_days):
+            if daytime < QUIET_END_SECONDS:
+                return midnight + QUIET_END_SECONDS
+            if daytime < QUIET_START_SECONDS:
+                return timestamp
+        timestamp = midnight + 86400 + QUIET_END_SECONDS   # Folgetag, Beginn des Fensters
+    return timestamp
+
+
+def milestone_reached(since, now, units, range_key, trading_days=None):
+    """Ist der Dauer-Meilenstein `units` seit `since` überschritten?
+
+    Bewusst „mehr als" statt „mindestens": genau erreicht ist eine Tages-Schwelle schon am
+    Ende des Handelstages, an dem die Uhr gestartet ist (zwischen 23:00 und 07:30 vergeht
+    keine Handelszeit, der Wert bleibt über Nacht stehen). Die Meldung soll aber erst am
+    Folgetag zur Uhrzeit des Ausschlags kommen."""
+    return open_seconds(since, now, trading_days) > units * milestone_seconds(range_key)
+
+
+def open_seconds(start, end, trading_days=None):
+    """Vergangene HANDELSZEIT zwischen zwei Zeitpunkten: ohne Nächte (23:00-07:30), ohne
+    Wochenenden und (bei bekanntem Raster) ohne Feiertage.
+
+    Damit bleibt die Uhrzeit des Ausschlags erhalten, weil das Nachtfenster jeden Tag
+    gleich lang ist: Di 12:03 + 1 Handelstag = Mi 12:03, Fr 12:03 + 1 Handelstag = Mo 12:03.
+    Durchlaufen wird kalendertageweise in Ortszeit (max. ~35 Runden für den größten
+    Meilenstein)."""
+    total = 0
+    cursor = start
+    while cursor < end:
+        local = time.localtime(cursor)
+        daytime = local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec
+        midnight = cursor - daytime
+        day_end = midnight + 86400          # Beginn des lokalen Folgetages
+        chunk_end = min(day_end, end)
+        if is_trading_day(local, trading_days):
+            # Schnittmenge des Tagesstücks mit dem Meldefenster dieses Tages.
+            overlap = (min(chunk_end, midnight + QUIET_START_SECONDS)
+                       - max(cursor, midnight + QUIET_END_SECONDS))
+            total += max(0, overlap)
+        cursor = chunk_end
+    return total
+
+
 def cumulative_trend(series):
     """Laufender Durchschnitt series[0..i] — dieselbe Trendlinie wie im Chart."""
     result = []
@@ -667,21 +772,36 @@ def evaluate_signal(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
 
 
 def evaluate_signal_and_run(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
-    """Aktuelles Signal am letzten Balken PLUS die Länge der Serie gleicher Richtung
-    in KERZEN. So kennt der Server die Dauer auch, wenn er ein schon laufendes Signal
-    zum ersten Mal sieht (Rückrechnung aus der Historie)."""
+    """Liefert (signal, kennung, beginn) für den letzten Balken einer Kurshistorie.
+
+    `kennung` ist der Zeitstempel der letzten Kerze VOR der Serie gleicher Richtung. Damit
+    erkennt die Überwachung dieselbe Serie wieder, wenn ein Signal kurz wegkippt und
+    zurückkommt. Bewusst nicht die erste Kerze der Serie: die laufende (noch offene) Kerze
+    trägt bei Yahoo die letzte Handelszeit und wandert zwischen zwei Abrufen — die Kerze
+    davor ist abgeschlossen und deshalb stabil.
+
+    `beginn` ist der Zeitstempel der ERSTEN Kerze der Serie, aber 0, wenn die Serie nur aus
+    der aktuell offenen Kerze besteht. 0 heißt „kein belastbarer Beginn aus der Historie" —
+    dann zählt der Aufrufer ab dem Zeitpunkt der Entdeckung. Genau so bekommt ein frischer
+    Ausschlag die Uhrzeit, zu der er wirklich auftrat (12:03), und nicht die der
+    Kerzen-Eröffnung (09:00). Sieht der Server dagegen eine schon länger laufende Serie zum
+    ersten Mal, holt er die verstrichene Dauer aus der Historie."""
     series = combined_signal_series(data, settings, fg_times, fg_scores, sd_times, sd_spreads)
     if not series:
-        return None, 0
+        return None, 0, 0
     signal = series[-1]
     if signal is None:
-        return None, 0
-    run = 1
+        return None, 0, 0
     index = len(series) - 2
     while index >= 0 and series[index] == signal:
-        run += 1
         index -= 1
-    return signal, run
+    timestamps = data.get("timestamps") or []
+    # Nach der Schleife zeigt `index` genau auf die letzte Kerze, die NICHT zur Serie gehört.
+    anchor = timestamps[index] if 0 <= index < len(timestamps) else 0
+    started = index + 1
+    # Nur die offene Kerze -> kein belastbarer Beginn (siehe oben).
+    begun = timestamps[started] if started < len(timestamps) - 1 else 0
+    return signal, anchor, begun
 
 
 def send_windows_toast(title, body):
@@ -907,21 +1027,30 @@ def send_test_mail():
 
 
 def normalize_state_entry(value):
-    """Zustand je Filter+Zeitfenster+Wert: {signal, notifiedBars, notifiedSignal,
-    notifiedAt} — welche Kerzen-Meilensteine schon gemeldet wurden, welche Richtung
-    zuletzt tatsächlich gemeldet wurde und wann (für die 6-Stunden-Sperre). Ältere
-    Stände (reiner String, oder ohne die beiden Sperr-Felder) werden verträglich
-    übernommen: ohne Zeitstempel gilt die Sperre schlicht als abgelaufen."""
+    """Zustand je Filter+Zeitfenster+Wert: {signal, notifiedMilestones, notifiedSignal,
+    notifiedAt, runAnchor, runSince} — welche Dauer-Meilensteine schon gemeldet wurden,
+    welche Richtung zuletzt tatsächlich gemeldet wurde und wann (für die 6-Stunden-Sperre),
+    die Kennung der gemeldeten Serie und der Zeitpunkt, ab dem ihre Dauer zählt (beides
+    siehe evaluate_signal_and_run). Ältere Stände (reiner String, oder ohne die neueren
+    Felder) werden verträglich übernommen: ohne Zeitstempel gilt die Sperre schlicht als
+    abgelaufen, und runAnchor 0 trifft nie auf eine echte Kerze — dann entscheidet allein
+    die Sperre wie bisher. `notifiedBars` ist der alte Name von `notifiedMilestones`; er
+    wird weiter gelesen, damit schon gemeldete Meilensteine nicht erneut fällig werden."""
+    empty = {"signal": "none", "notifiedMilestones": [], "notifiedSignal": "none",
+             "notifiedAt": 0, "runAnchor": 0, "runSince": 0}
     if isinstance(value, dict):
         return {
             "signal": value.get("signal", "none"),
-            "notifiedBars": value.get("notifiedBars") or [],
+            "notifiedMilestones": (value.get("notifiedMilestones")
+                                   or value.get("notifiedBars") or []),
             "notifiedSignal": value.get("notifiedSignal") or "none",
             "notifiedAt": value.get("notifiedAt") or 0,
+            "runAnchor": value.get("runAnchor") or 0,
+            "runSince": value.get("runSince") or 0,
         }
     if isinstance(value, str):
-        return {"signal": value, "notifiedBars": [], "notifiedSignal": "none", "notifiedAt": 0}
-    return {"signal": "none", "notifiedBars": [], "notifiedSignal": "none", "notifiedAt": 0}
+        return {**empty, "signal": value}
+    return empty
 
 
 def store_notifications(entries):
@@ -954,12 +1083,21 @@ def derive_watchlist(config):
     return {"favorites": favorites, "filters": filters, "updated": int(time.time())}
 
 
-def run_alert_check():
-    """Ein Durchlauf: jeder überwachte Filter gegen jeden Favoriten."""
+def run_alert_check(force=False):
+    """Ein Durchlauf: jeder überwachte Filter gegen jeden Favoriten.
+
+    Außerhalb der Handelszeit wird nicht geprüft und deshalb auch nichts gemeldet — ein
+    Signal, das nachts oder am Wochenende entsteht, kommt beim ersten Durchlauf im
+    Meldefenster. `force=True` übergeht das (Knopf „sofort prüfen" auf der Seite: wer
+    ausdrücklich prüft, will auch nachts eine Antwort)."""
     watchlist = read_json_file(WATCHLIST_FILE, {}) or {}
     favorites = watchlist.get("favorites") or []
     filters = watchlist.get("filters") or []
     if not favorites or not filters:
+        return []
+    # Nachtruhe und Wochenende gelten für alle Werte gleich — dann gar nicht erst bei
+    # Yahoo anfragen. Feiertage haengen am einzelnen Wert und werden unten geprüft.
+    if not force and not in_trading_window(int(time.time())):
         return []
 
     fear_greed = cached("fear_greed", CACHE_TTL_SECONDS, get_fear_greed)
@@ -1001,7 +1139,7 @@ def run_alert_check():
                         ("history", symbol, range_key, ma_window), CACHE_TTL_SECONDS,
                         lambda s=symbol, r=range_key: get_history(s, r, ma_window),
                     )
-                    signal, run_bars = evaluate_signal_and_run(
+                    signal, run_anchor, run_begun = evaluate_signal_and_run(
                         data, settings, fg_times, fg_scores, sd_times, sd_spreads
                     )
                 except Exception as exc:
@@ -1010,10 +1148,17 @@ def run_alert_check():
                     print(f"Prüfung {key} fehlgeschlagen: {exc}")
                     continue
 
-                prev = normalize_state_entry(previous.get(key))
+                # Handelt dieser Wert heute überhaupt? Das Kerzenraster kennt die Feiertage
+                # seiner Börse. An einem geschlossenen Tag bleibt der Zustand unberührt —
+                # gemeldet wird dann beim ersten Durchlauf am nächsten Handelstag.
+                trading = trading_days_from(data, range_key)
                 now = int(time.time())
+                if not force and not in_trading_window(now, trading):
+                    continue
 
-                def make_note(sustained_bars=None):
+                prev = normalize_state_entry(previous.get(key))
+
+                def make_note(sustained_units=None):
                     note = {
                         "ts": now * 1000,
                         "symbol": symbol,
@@ -1023,56 +1168,94 @@ def run_alert_check():
                         "type": signal,
                         "read": False,
                     }
-                    if sustained_bars is not None:
-                        note["sustainedBars"] = sustained_bars
-                        note["sustainedLabel"] = milestone_label(sustained_bars, range_key)
+                    if sustained_units is not None:
+                        note["sustainedUnits"] = sustained_units
+                        note["sustainedLabel"] = milestone_label(sustained_units, range_key)
                     return note
 
-                def fire_due_milestones(already):
-                    """Meilensteine melden, die die Serie erreicht hat: `bars_since` ist die Zahl
-                    der Kerzen NACH dem ersten Ausschlag (Sofortmeldung = Kerze 1 = bars_since 0)."""
-                    notified = list(already)
-                    bars_since = run_bars - 1
-                    for threshold in DURATION_MILESTONES_BARS:
-                        if threshold not in notified and bars_since >= threshold:
-                            notified.append(threshold)
-                            fresh.append(make_note(sustained_bars=threshold))
-                    return notified
+                def fire_due_milestones(already, since, first_alert=False):
+                    """Meilensteine melden, die die Serie erreicht hat. Gezählt wird die
+                    HANDELSZEIT seit `since` (ohne Nächte, Wochenenden und Feiertage) — so
+                    kommt die Tages-Meldung zur Uhrzeit des Ausschlags und nicht zur
+                    Börseneröffnung. Sind mehrere Schwellen auf einmal fällig — typisch, wenn
+                    der Server eine schon laufende Serie zum ersten Mal sieht —, kommt NUR die
+                    höchste: sie enthält die Aussage der kleineren. Sonst kämen mehrere Mails
+                    gleichzeitig, die dasselbe sagen. `first_alert` ist die Sofortmeldung eines
+                    neuen Ausschlags; sie entfällt, wenn ohnehin eine Dauer-Meldung rausgeht."""
+                    due = [m for m in DURATION_MILESTONES
+                           if m not in already
+                           and milestone_reached(since, now, m, range_key, trading)]
+                    if due:
+                        fresh.append(make_note(sustained_units=max(due)))
+                    elif first_alert:
+                        fresh.append(make_note())
+                    return list(already) + due
 
-                def keep_notified(state_signal, bars):
-                    """Zustand fortschreiben, ohne das Sperr-Gedächtnis zu verlieren."""
+                def keep_notified(state_signal, milestones, anchor=None, since=None):
+                    """Zustand fortschreiben, ohne Sperr-, Meilenstein- und Dauer-Gedächtnis zu
+                    verlieren. Ohne `anchor`/`since` bleiben die gemerkten Werte stehen — beim
+                    Wegkippen des Signals gibt es keine neuen, und genau sie werden später zum
+                    Wiedererkennen derselben Serie und für ihre Dauer gebraucht."""
                     return {
                         "signal": state_signal,
-                        "notifiedBars": bars,
+                        "notifiedMilestones": milestones,
                         "notifiedSignal": prev["notifiedSignal"],
                         "notifiedAt": prev["notifiedAt"],
+                        "runAnchor": prev["runAnchor"] if anchor is None else anchor,
+                        "runSince": prev["runSince"] if since is None else since,
                     }
 
                 cooling = now - prev["notifiedAt"] < NOTIFY_COOLDOWN_SECONDS
+                # Serien-Vergleich: gleiche Kennung = nachweislich dieselbe Serie. Eine ANDERE
+                # heißt, die Serie hat neu begonnen — auch dann, wenn der Server die Pause
+                # zwischen zwei Prüfungen gar nicht zu sehen bekam (bei kurzen Kerzen oder nach
+                # einem Neustart durchaus möglich). Alte Zustände ohne runAnchor (0) lassen
+                # keinen Vergleich zu; dort entscheiden wie bisher letzter Zustand und Sperre.
+                same_run = bool(run_anchor) and prev["runAnchor"] == run_anchor
+                restarted = bool(run_anchor) and bool(prev["runAnchor"]) and not same_run
+                # Fortsetzung statt neuem Ausschlag: entweder unverändert am Ausschlagen, oder
+                # dieselbe Richtung ist nach kurzem Wegkippen zurück — nachweislich dieselbe
+                # Kerzen-Serie oder noch innerhalb der Sperre (Zappeln um die Schwelle).
+                continues = (prev["signal"] == signal and not restarted) or (
+                    prev["notifiedSignal"] == signal and (cooling or same_run)
+                )
+                # Ab wann die Dauer zählt. Fortsetzung: die gemerkte Uhr weiterlaufen lassen;
+                # Altbestand ohne runSince fällt auf den Zeitpunkt der ersten Meldung zurück,
+                # ganz alte Stände auf jetzt — so wird beim Deployen nichts rückwirkend fällig.
+                resumed_since = align_to_trading_window(
+                    prev["runSince"] or prev["notifiedAt"] or now, trading
+                )
+                # Neuer Ausschlag: Beginn aus der Historie, sonst die Minute der Entdeckung.
+                # Letzteres ist der Normalfall und sorgt für den Bezug zur Uhrzeit (12:03).
+                fresh_since = align_to_trading_window(run_begun or now, trading)
 
                 if not signal:
                     # Kein Ausschlag mehr. Die Sperre muss trotzdem stehen bleiben, sonst
                     # wäre jedes kurze Wegkippen des Signals wieder ein "neuer" Ausschlag.
-                    current[key] = keep_notified("none", prev["notifiedBars"])
-                elif prev["signal"] == signal:
-                    # Unverändert am Ausschlagen: nur bei neu erreichten Kerzen-Schwellen melden.
-                    current[key] = keep_notified(signal, fire_due_milestones(prev["notifiedBars"]))
-                elif cooling and prev["notifiedSignal"] == signal:
-                    # Dieselbe Richtung wie die letzte Meldung, und die ist keine 6 Stunden her:
-                    # das ist Zappeln um die Schwelle, kein neuer Ausschlag. Als Fortsetzung
-                    # behandeln — dann kommen auch die Dauer-Meilensteine nicht doppelt.
-                    current[key] = keep_notified(signal, prev["notifiedBars"])
+                    current[key] = keep_notified("none", prev["notifiedMilestones"])
+                elif continues:
+                    # Nur neu erreichte Dauer-Schwellen melden — das Gedächtnis bleibt
+                    # erhalten, also kommt nichts doppelt.
+                    current[key] = keep_notified(
+                        signal,
+                        fire_due_milestones(prev["notifiedMilestones"], resumed_since),
+                        run_anchor,
+                        resumed_since,
+                    )
                 else:
                     # Neuer bzw. erstmals gesehener Ausschlag (auch Richtungswechsel Kauf<->Verkauf,
-                    # der die Sperre bewusst durchbricht): sofort melden. run_bars kommt aus der
-                    # Historie, damit ein schon länger laufendes Signal die fälligen Meilensteine
-                    # sofort nachholt.
-                    fresh.append(make_note())
+                    # der die Sperre bewusst durchbricht): sofort melden. Läuft die Serie laut
+                    # Historie schon länger, sagt die EINE Meldung das gleich mit ("Anhaltendes
+                    # Kaufsignal (seit 2 Tagen)"), statt mehrere Mails zu schicken.
                     current[key] = {
                         "signal": signal,
-                        "notifiedBars": fire_due_milestones([]),
+                        "notifiedMilestones": fire_due_milestones(
+                            [], fresh_since, first_alert=True
+                        ),
                         "notifiedSignal": signal,
                         "notifiedAt": now,
+                        "runAnchor": run_anchor,
+                        "runSince": fresh_since,
                     }
 
     write_json_file(ALERT_STATE_FILE, current)
@@ -1284,10 +1467,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": ok, "error": error})
             return
 
-        # Sofort prüfen (z.B. direkt nach dem Markieren eines Filters).
+        # Sofort prüfen (z.B. direkt nach dem Markieren eines Filters). Bewusst mit force:
+        # wer hier ausdrücklich prüft, will auch außerhalb der Handelszeit eine Antwort.
         if parsed.path == "/api/alerts/check":
             try:
-                fresh = run_alert_check()
+                fresh = run_alert_check(force=True)
                 self._send_json({"new": len(fresh)})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=502)
@@ -1318,10 +1502,13 @@ def main():
     shown_host = "127.0.0.1" if HOST in ("127.0.0.1", "0.0.0.0") else HOST
     hint = " (im Netzwerk erreichbar)" if HOST == "0.0.0.0" else ""
     print(f"Server laeuft auf http://{shown_host}:{PORT}{hint}")
+    quiet_end = f"{QUIET_END_SECONDS // 3600:02d}:{QUIET_END_SECONDS % 3600 // 60:02d}"
+    quiet_start = f"{QUIET_START_SECONDS // 3600:02d}:{QUIET_START_SECONDS % 3600 // 60:02d}"
     print(
         f"Ueberwachung aktiv: {watched} Filter, Pruefung alle {ALERT_INTERVAL_SECONDS // 60} Minuten,"
         f" Meldesperre {NOTIFY_COOLDOWN_SECONDS // 3600} Stunden je Signal"
     )
+    print(f"Gemeldet wird nur an Handelstagen zwischen {quiet_end} und {quiet_start} Uhr")
     print(mail_setup_line())
     server.serve_forever()
     return 0

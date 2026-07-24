@@ -42,6 +42,18 @@ und Zeitfenster: Kippt ein Indikator knapp um seine Schwelle, kommt die Meldung 
 paar Minuten erneut. Ein Richtungswechsel (Kauf ↔ Verkauf) durchbricht die Sperre sofort,
 und die Meldungen zu länger anhaltenden Signalen bleiben davon unberührt.
 
+Hält ein Filter an, kommt bei 1, 2, 3, 7, 14 und 24 Einheiten je **eine** weitere Meldung
+(Einheit: Stunde im Tages-, Wochen- und Monats-Chart, Tag im Jahres-Chart, Woche bei 5 und
+10 Jahren); danach ist Schluss. Gemessen wird dabei die Uhrzeit ab dem ersten Ausschlag,
+nicht in Kerzen: Ein Wert, der um 12:03 anschlägt, meldet am nächsten Handelstag gegen
+12:03 — und nicht zur Börseneröffnung, wo sonst alle Werte gleichzeitig melden würden.
+
+Die Uhr läuft **nur während der Handelszeit**: nachts (23:00–07:30), an Wochenenden und an
+Feiertagen steht sie still, und in dieser Zeit wird auch nichts verschickt. Ein Ausschlag
+Freitag um 12:03 meldet also Montag gegen 12:03. Die Feiertage muss niemand pflegen — der
+Server erkennt sie daran, dass es für den jeweiligen Wert an dem Tag keine Kerze gibt, und
+richtet sich damit automatisch nach der Börse des Wertes.
+
 Die Meldungen erscheinen als Windows-Benachrichtigung, optional per E-Mail und immer in
 der Glocke oben auf der Seite.
 

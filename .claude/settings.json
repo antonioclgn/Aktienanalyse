@@ -12,7 +12,19 @@
       "Bash(python make_icon.py)",
       "Bash(curl -s -o /dev/null -D - \"http://127.0.0.1:8000/icon.png\")",
       "Bash(curl -s -o /dev/null -w \"%{content_type}\\\\n\" \"http://127.0.0.1:8000/\")",
-      "Bash(curl -s -o /dev/null -w \"data/mail_config.json -> HTTP %{http_code}\\\\n\" \"http://127.0.0.1:8000/data/mail_config.json\")"
+      "Bash(curl -s -o /dev/null -w \"data/mail_config.json -> HTTP %{http_code}\\\\n\" \"http://127.0.0.1:8000/data/mail_config.json\")",
+      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\test_alerts.py\")",
+      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\test_alerts.py\" 2>&1)",
+      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\check_candles.py\")",
+      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\check_drift.py\")",
+      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\schedule.py\")",
+      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\schedule.py\" 2>&1)",
+      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\test_clock.py\")",
+      "PowerShell(cd \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\"; \\(Get-Content test_clock.py\\) -replace '\"29.07.2026 08:11\"', '\"29.07.2026 08:10\"' -replace '\"29.07.2026 07:31\"', '\"29.07.2026 07:30\"' -replace '\"03.08.2026 07:31\"', '\"03.08.2026 07:30\"' | Set-Content test_clock.py; python test_clock.py)",
+      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\test_alerts.py\" 2>&1 | Select-String -Pattern \"^\\(OK|FEHL|---\\)\" | Select-Object -Last 30; \"exit=$LASTEXITCODE\")",
+      "PowerShell(cd \"c:\\\\Users\\\\anton\\\\programmierung\\\\Aktienanalyse\"; python -m py_compile server.py; if \\($?\\) { \"py_compile OK\" }; $env:AKTIENANALYSE_PORT=\"8099\"; $p = Start-Process -FilePath python -ArgumentList \"server.py\" -NoNewWindow -PassThru -RedirectStandardOutput out.log -RedirectStandardError err.log; Start-Sleep -Seconds 4; Stop-Process -Id $p.Id -Force; Get-Content out.log; \"--- stderr ---\"; Get-Content err.log; Remove-Item out.log, err.log)",
+      "PowerShell(cd \"c:\\\\Users\\\\anton\\\\programmierung\\\\Aktienanalyse\"; $env:AKTIENANALYSE_PORT=\"8099\"; $p = Start-Process -FilePath python -ArgumentList \"-u\",\"server.py\" -NoNewWindow -PassThru -RedirectStandardOutput out.log -RedirectStandardError err.log; Start-Sleep -Seconds 5; Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 1; Get-Content out.log; \"--- stderr ---\"; Get-Content err.log; Remove-Item out.log, err.log -ErrorAction SilentlyContinue)",
+      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\beispiele.py\")"
     ]
   }
 }
