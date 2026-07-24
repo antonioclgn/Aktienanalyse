@@ -2,28 +2,20 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Aktienanalyse</title>
 <style>
   /* Verhindert, dass mobile Browser die Schrift automatisch vergrößern (Font-Boosting) —
      sonst sieht die Seite am Handy „aufgebläht" aus. */
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-  body { margin: 0; display: none; }
-  body.app-ready { display: block; }
+  body { margin: 0; }
 
-  /* Auf schmalen Bildschirmen sauber stapeln, damit beim ersten Mobil-Render kein
-     falsches Desktop-Lagebild erscheint. */
+  /* Auch auf schmalen Bildschirmen zweispaltig bleiben (Charts links, Leiste rechts) —
+     nur die Leiste schmaler und ohne 300px-Mindestbreite, damit beide Spalten passen. */
   @media (max-width: 700px) {
-    .dashboard-layout {
-      flex-direction: column !important;
-    }
     .sidebar {
-      width: 100% !important;
+      width: 42% !important;
       min-width: 0 !important;
-      position: relative !important;
-      height: auto !important;
-      border-left: none !important;
-      border-top: 1px solid #ccc !important;
     }
   }
 </style>
@@ -1660,7 +1652,6 @@
         // Aufruf bereits in der gewünschten Darstellung landet und nicht erst nach
         // einem Reload auf den gezielten Zustand springt.
         applyDeepLink();
-        document.body.classList.add('app-ready');
         await pullConfig();
         loadHighlightSettings();
         // Verwaiste Überwachungen (deren Variante gelöscht wurde) einmalig entfernen
