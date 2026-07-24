@@ -1635,6 +1635,10 @@
 
       (async function init() {
         migrateLegacySettings();
+        // Deep-Link vor dem ersten UI-Render anwenden, damit die Seite beim ersten
+        // Aufruf bereits in der gewünschten Darstellung landet und nicht erst nach
+        // einem Reload auf den gezielten Zustand springt.
+        applyDeepLink();
         await pullConfig();
         loadHighlightSettings();
         // Verwaiste Überwachungen (deren Variante gelöscht wurde) einmalig entfernen
@@ -1644,6 +1648,9 @@
         if (Array.isArray(rawWatched) && rawWatched.length !== cleanedWatched.length) {
           saveWatchedFilters(cleanedWatched);
         }
+        // Nach dem Syncladen der serverseitigen Konfiguration die Deep-Link-Parameter
+        // erneut durchsetzen, damit die ermittelten Filternamen exakt auf dieselbe
+        // Anzeige wie im E-Mail-Link einwirken.
         applyDeepLink();
         renderFavorites();
         updateFavoriteStar();
