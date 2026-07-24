@@ -2,20 +2,28 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Aktienanalyse</title>
 <style>
   /* Verhindert, dass mobile Browser die Schrift automatisch vergrößern (Font-Boosting) —
      sonst sieht die Seite am Handy „aufgebläht" aus. */
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-  body { margin: 0; }
+  body { margin: 0; display: none; }
+  body.app-ready { display: block; }
 
-  /* Auch auf schmalen Bildschirmen zweispaltig bleiben (Charts links, Leiste rechts) —
-     nur die Leiste schmaler und ohne 300px-Mindestbreite, damit beide Spalten passen. */
+  /* Auf schmalen Bildschirmen sauber stapeln, damit beim ersten Mobil-Render kein
+     falsches Desktop-Lagebild erscheint. */
   @media (max-width: 700px) {
+    .dashboard-layout {
+      flex-direction: column !important;
+    }
     .sidebar {
-      width: 42% !important;
+      width: 100% !important;
       min-width: 0 !important;
+      position: relative !important;
+      height: auto !important;
+      border-left: none !important;
+      border-top: 1px solid #ccc !important;
     }
   }
 </style>
@@ -100,9 +108,13 @@
   </div>
 
     <script>
+      const deepLinkParams = new URLSearchParams(location.search);
+      const initialDeepLinkSymbol = deepLinkParams.get('symbol');
+      const initialDeepLinkRange = deepLinkParams.get('range');
+      const VALID_INITIAL_RANGES = new Set(['1d', '5d', '1mo', '1y', '5y', '10y']);
       const LAST_SYMBOL_KEY = 'aktienanalyse-last-symbol';
-      let currentSymbol = localStorage.getItem(LAST_SYMBOL_KEY) || 'SXR8.DE';
-      let currentRange = '1y';
+      let currentSymbol = initialDeepLinkSymbol || localStorage.getItem(LAST_SYMBOL_KEY) || 'SXR8.DE';
+      let currentRange = VALID_INITIAL_RANGES.has(initialDeepLinkRange) ? initialDeepLinkRange : '1y';
       let sharedChartPadLeft = 30;
       // Zeitstempel des zuletzt geladenen Kurscharts, damit der Fear&Greed-Chart
       // (der aus /api/data getrennt geladen wird) sich auf dieselbe X-Achse legen kann.
@@ -1606,6 +1618,14 @@
       // danach die Oberfläche daraus aufbauen. So sieht jedes Gerät dasselbe.
       // Deep-Link aus der E-Mail: ?symbol=&range=&filter= wählt Asset, Zeitfenster und
       // Filter vor. Wird beim Start nach dem Laden der Varianten angewendet.
+      function syncUiFromState() {
+        document.getElementById('selected-instrument').textContent = currentSymbol;
+        rangeButtons.forEach(b => {
+          b.style.fontWeight = b.dataset.range === currentRange ? 'bold' : 'normal';
+        });
+        updateFavoriteStar();
+      }
+
       function applyDeepLink() {
         const params = new URLSearchParams(location.search);
         const filter = params.get('filter');
@@ -1623,22 +1643,24 @@
         }
         if (range && RANGE_LABELS[range]) {
           currentRange = range;
-          rangeButtons.forEach(b => { b.style.fontWeight = b.dataset.range === range ? 'bold' : 'normal'; });
         }
         if (symbol) {
           currentSymbol = symbol;
           localStorage.setItem(LAST_SYMBOL_KEY, symbol);
         }
+        syncUiFromState();
         // URL säubern, damit ein manueller Reload die Auswahl nicht erneut erzwingt.
         history.replaceState(null, '', location.pathname);
       }
 
       (async function init() {
         migrateLegacySettings();
+        loadHighlightSettings();
         // Deep-Link vor dem ersten UI-Render anwenden, damit die Seite beim ersten
         // Aufruf bereits in der gewünschten Darstellung landet und nicht erst nach
         // einem Reload auf den gezielten Zustand springt.
         applyDeepLink();
+        document.body.classList.add('app-ready');
         await pullConfig();
         loadHighlightSettings();
         // Verwaiste Überwachungen (deren Variante gelöscht wurde) einmalig entfernen
@@ -1653,8 +1675,8 @@
         // Anzeige wie im E-Mail-Link einwirken.
         applyDeepLink();
         renderFavorites();
-        updateFavoriteStar();
         refreshNotifications();
+        syncUiFromState();
         loadData(currentSymbol);
         loadChart(currentSymbol, currentRange);
         setInterval(refreshNotifications, NOTIFICATION_POLL_MS);
