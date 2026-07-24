@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import smtplib
+import socket
 import subprocess
 import threading
 import time
@@ -735,6 +736,36 @@ def notification_text(entry):
     return title, body
 
 
+def _local_ip():
+    """LAN-IP dieses Rechners (ohne echten Verbindungsaufbau) — für Links in der Mail."""
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("8.8.8.8", 80))
+            return probe.getsockname()[0]
+        finally:
+            probe.close()
+    except OSError:
+        return "127.0.0.1"
+
+
+def notification_base_url():
+    """Basis-URL für die Links in den Mails. In data/mail_config.json per "baseUrl"
+    überschreibbar; sonst automatisch die LAN-IP dieses Servers (passt für den Pi)."""
+    config = read_json_file(MAIL_CONFIG_FILE, None) or {}
+    base = (config.get("baseUrl") or "").strip().rstrip("/")
+    return base or f"http://{_local_ip()}:{PORT}"
+
+
+def notification_link(entry):
+    """Deep-Link, der die Seite öffnet und Asset, Zeitfenster und Filter vorwählt."""
+    return (
+        f"{notification_base_url()}/?symbol={quote(entry['symbol'], safe='')}"
+        f"&range={quote(entry['range'], safe='')}"
+        f"&filter={quote(entry['filter'], safe='')}"
+    )
+
+
 def normalize_state_entry(value):
     """Zustand je Filter+Zeitfenster+Wert: {signal, notifiedBars} — welche
     Kerzen-Meilensteine schon gemeldet wurden. Ältere Stände (reiner String, oder
@@ -885,7 +916,8 @@ def run_alert_check():
         for item in fresh:
             title, body = notification_text(item)
             send_windows_toast(title, body)
-            send_mail(title, body)
+            # In der Mail zusätzlich ein Direkt-Link, der Asset/Zeitfenster/Filter vorwählt.
+            send_mail(title, f"{body}\n\nDirekt öffnen: {notification_link(item)}")
     return fresh
 
 

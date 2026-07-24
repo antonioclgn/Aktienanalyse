@@ -7,23 +7,12 @@
 <style>
   body { margin: 0; }
 
+  /* Auch auf schmalen Bildschirmen zweispaltig bleiben (Charts links, Leiste rechts) —
+     nur die Leiste schmaler und ohne 300px-Mindestbreite, damit beide Spalten passen. */
   @media (max-width: 700px) {
-    .dashboard-layout {
-      flex-direction: column;
-    }
-
     .sidebar {
-      width: 100% !important;
+      width: 42% !important;
       min-width: 0 !important;
-      border-left: 0 !important;
-      border-top: 1px solid #ccc;
-      position: static !important;
-      height: auto !important;
-      overflow: visible !important;
-    }
-
-    .bar-settings {
-      margin-top: 16px !important;
     }
   }
 </style>
@@ -466,7 +455,7 @@
               container.appendChild(label);
             } else {
               const line = document.createElement('div');
-              line.style.cssText = 'display: flex; gap: 4px; align-items: center; margin: 0 0 7px 22px;';
+              line.style.cssText = 'display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 0 0 7px 22px;';
               (row.fields || []).forEach(field => {
                 const label = document.createElement('label');
                 appendSettingField(label, field);
@@ -1612,6 +1601,35 @@
 
       // Start: erst den geräteübergreifenden Stand vom Server holen (Variante A),
       // danach die Oberfläche daraus aufbauen. So sieht jedes Gerät dasselbe.
+      // Deep-Link aus der E-Mail: ?symbol=&range=&filter= wählt Asset, Zeitfenster und
+      // Filter vor. Wird beim Start nach dem Laden der Varianten angewendet.
+      function applyDeepLink() {
+        const params = new URLSearchParams(location.search);
+        const filter = params.get('filter');
+        const range = params.get('range');
+        const symbol = params.get('symbol');
+        if (!filter && !range && !symbol) return;
+
+        if (filter) {
+          const settings = filterSettingsByName(filter);
+          if (settings) {
+            highlightSettings = normalizeSettings(settings);
+            saveHighlightSettings();
+            loadHighlightSettings();
+          }
+        }
+        if (range && RANGE_LABELS[range]) {
+          currentRange = range;
+          rangeButtons.forEach(b => { b.style.fontWeight = b.dataset.range === range ? 'bold' : 'normal'; });
+        }
+        if (symbol) {
+          currentSymbol = symbol;
+          localStorage.setItem(LAST_SYMBOL_KEY, symbol);
+        }
+        // URL säubern, damit ein manueller Reload die Auswahl nicht erneut erzwingt.
+        history.replaceState(null, '', location.pathname);
+      }
+
       (async function init() {
         migrateLegacySettings();
         await pullConfig();
@@ -1623,6 +1641,7 @@
         if (Array.isArray(rawWatched) && rawWatched.length !== cleanedWatched.length) {
           saveWatchedFilters(cleanedWatched);
         }
+        applyDeepLink();
         renderFavorites();
         updateFavoriteStar();
         refreshNotifications();

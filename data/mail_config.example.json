@@ -1,10 +1,11 @@
 {
-  "_hinweis": "Kopie dieser Datei als data/mail_config.json speichern und ausfuellen. Ohne diese Datei laeuft die Ueberwachung weiter, es kommt nur keine Mail. Bei Gmail/GMX/Web.de ein App-Passwort verwenden, nicht das Anmeldepasswort.",
+  "_hinweis": "Kopie dieser Datei als data/mail_config.json speichern und ausfuellen. NIEMALS echte Zugangsdaten in DIESE Beispieldatei schreiben - sie wird nach GitHub gepusht. Bei Gmail/GMX/Web.de ein App-Passwort verwenden, nicht das Anmeldepasswort.",
   "host": "smtp.gmail.com",
   "port": 465,
   "security": "ssl",
-  "user": "tradinganalyseindikatorbot@gmail.com",
-  "password": "ggawljalrdzfdvbr",
-  "from": "tradinganalyseindikatorbot@gmail.com",
-  "to": "Antoniovella21@gmail.com"
+  "user": "deine.adresse@gmail.com",
+  "password": "app-passwort-16-zeichen",
+  "from": "deine.adresse@gmail.com",
+  "to": "empfaenger@example.com",
+  "baseUrl": "http://192.168.178.50:8000"
 }
