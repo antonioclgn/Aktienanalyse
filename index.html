@@ -2,22 +2,20 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- Feste Layout-Breite statt „width=device-width": das Handy rendert die Seite immer
+     mit 980 CSS-Pixeln und skaliert sie auf die Bildschirmbreite herunter — dieselbe
+     Darstellung wie am PC. Sonst haengt das Aussehen davon ab, ob Chrome fuer diese
+     Adresse zufaellig „Desktop-Site" gemerkt hat (beim Oeffnen aus der Mail heraus
+     greift das nicht, erst nach einem Reload). Ohne initial-scale, damit der Browser
+     selbst passend herunterskaliert; Zoomen bleibt moeglich. Desktop-Browser
+     ignorieren dieses Tag ohnehin. -->
+<meta name="viewport" content="width=980">
 <title>Aktienanalyse</title>
 <style>
   /* Verhindert, dass mobile Browser die Schrift automatisch vergrößern (Font-Boosting) —
      sonst sieht die Seite am Handy „aufgebläht" aus. */
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   body { margin: 0; }
-
-  /* Auch auf schmalen Bildschirmen zweispaltig bleiben (Charts links, Leiste rechts) —
-     nur die Leiste schmaler und ohne 300px-Mindestbreite, damit beide Spalten passen. */
-  @media (max-width: 700px) {
-    .sidebar {
-      width: 42% !important;
-      min-width: 0 !important;
-    }
-  }
 </style>
 </head>
 <body>
@@ -102,9 +100,14 @@
   </div>
 
     <script>
+      // Deep-Link aus der Mail: einmal beim Start festhalten. applyDeepLink() laeuft
+      // zweimal (vor und nach dem Laden der gespeicherten Varianten) und raeumt dabei
+      // die Adressleiste auf — aus location.search waeren die Werte beim zweiten Mal
+      // also weg, und genau der Filter braucht diesen zweiten Durchgang.
       const deepLinkParams = new URLSearchParams(location.search);
       const initialDeepLinkSymbol = deepLinkParams.get('symbol');
       const initialDeepLinkRange = deepLinkParams.get('range');
+      const initialDeepLinkFilter = deepLinkParams.get('filter');
       const VALID_INITIAL_RANGES = new Set(['1d', '5d', '1mo', '1y', '5y', '10y']);
       const LAST_SYMBOL_KEY = 'aktienanalyse-last-symbol';
       let currentSymbol = initialDeepLinkSymbol || localStorage.getItem(LAST_SYMBOL_KEY) || 'SXR8.DE';
@@ -1662,10 +1665,9 @@
       }
 
       function applyDeepLink() {
-        const params = new URLSearchParams(location.search);
-        const filter = params.get('filter');
-        const range = params.get('range');
-        const symbol = params.get('symbol');
+        const filter = initialDeepLinkFilter;
+        const range = initialDeepLinkRange;
+        const symbol = initialDeepLinkSymbol;
         if (!filter && !range && !symbol) return;
 
         if (filter) {
