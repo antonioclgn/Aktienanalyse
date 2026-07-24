@@ -55,8 +55,12 @@ also auf jedem Gerät (auch auf dem Pi) einzeln angelegt werden, und zwar **dem 
 gehörend, unter dem der Server läuft** (nicht mit `sudo` anlegen, sonst darf der Dienst sie
 nicht lesen und es kommt kommentarlos keine Mail).
 
-Alle Treffer eines Prüfdurchlaufs kommen in **einer** Sammelmail, jeweils mit Direkt-Link
-zum Chart. Ob der Versand klappt, steht unten in der Glocke („Letzte Mail: … ✓/✗" mit
+Jeder Treffer kommt als **eigene Mail** mit Direkt-Link zum Chart. Der Betreff enthält Wert,
+Zeitfenster, Filter sowie Datum und Uhrzeit — dadurch ist er immer eindeutig, und Gmail klappt
+mehrere Meldungen nicht zu einem Gesprächsverlauf zusammen. Schlagen mehrere Filter gleichzeitig
+an, gehen alle Mails über eine einzige SMTP-Verbindung raus.
+
+Ob der Versand klappt, steht unten in der Glocke („Letzte Mail: … ✓/✗" mit
 Fehlertext). Zum Prüfen:
 
 - in der Glocke auf **Test-Mail** klicken, oder

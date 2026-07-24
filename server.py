@@ -6,6 +6,7 @@ import calendar
 import csv
 import json
 import os
+import email.utils
 import smtplib
 import socket
 import subprocess
@@ -721,14 +722,13 @@ def load_mail_config():
     return config, None
 
 
-def log_mail_attempt(subject, count, ok, error):
+def log_mail_attempt(subject, ok, error):
     """Jeden Versuch festhalten — im Log des Dienstes UND in data/mail_log.json,
     damit die Seite (Glocke) den letzten Stand anzeigen kann."""
     stamp = time.strftime("%d.%m. %H:%M:%S")
     # flush: als Dienst ist die Ausgabe gepuffert, sonst steht im journal erst viel später etwas.
     print(f"[{stamp}] Mail „{subject}“: " + ("verschickt" if ok else f"FEHLER — {error}"), flush=True)
-    entry = {"ts": int(time.time()) * 1000, "ok": ok, "subject": subject,
-             "count": count, "error": error}
+    entry = {"ts": int(time.time()) * 1000, "ok": ok, "subject": subject, "error": error}
     with _file_lock:
         existing = read_json_file(MAIL_LOG_FILE, [])
         if not isinstance(existing, list):
@@ -736,19 +736,33 @@ def log_mail_attempt(subject, count, ok, error):
         write_json_file(MAIL_LOG_FILE, ([entry] + existing)[:MAX_MAIL_LOG])
 
 
-def send_mail(title, body, count=1):
-    """Mailversand. Liefert (ok, fehlertext) — der Fehler wird protokolliert und ist
-    über /api/alerts/notifications auf der Seite sichtbar, statt stumm zu verschwinden."""
-    config, config_error = load_mail_config()
-    if config_error:
-        log_mail_attempt(title, count, False, config_error)
-        return False, config_error
-
+def build_message(config, subject, body):
+    """Eine vollwertig eigenständige Nachricht. Eigene Message-ID und Datum, und
+    bewusst KEIN In-Reply-To/References — sonst hängt Gmail die Mail an einen
+    bestehenden Verlauf an, statt sie einzeln im Posteingang zu zeigen."""
     message = EmailMessage()
-    message["Subject"] = title
+    message["Subject"] = subject
     message["From"] = config.get("from") or config.get("user")
     message["To"] = config["to"]
+    message["Date"] = email.utils.formatdate(localtime=True)
+    message["Message-ID"] = email.utils.make_msgid(domain="aktienanalyse.local")
     message.set_content(body)
+    return message
+
+
+def send_mails(items):
+    """Verschickt je Eintrag (betreff, text) eine EIGENE Mail — aber alle über eine
+    einzige SMTP-Verbindung, damit ein Durchlauf mit mehreren Treffern nicht als
+    Anmelde-Schwall bei Gmail auffällt. Liefert (ok, fehlertext); Fehler landen im
+    Protokoll und sind über /api/alerts/notifications auf der Seite sichtbar."""
+    if not items:
+        return True, None
+    config, config_error = load_mail_config()
+    if config_error:
+        for subject, _ in items:
+            log_mail_attempt(subject, False, config_error)
+        return False, config_error
+
     port = int(config.get("port", 465))
     # "ssl" (üblich auf Port 465), "starttls" (üblich auf 587) oder "none".
     security = config.get("security") or ("ssl" if port == 465 else "starttls")
@@ -762,13 +776,15 @@ def send_mail(title, body, count=1):
                 server.starttls()
             if config.get("user"):
                 server.login(config["user"], config.get("password", ""))
-            server.send_message(message)
+            for subject, body in items:
+                server.send_message(build_message(config, subject, body))
 
     error = None
     for tries_left in (1, 0):
         try:
             attempt()
-            log_mail_attempt(title, count, True, None)
+            for subject, _ in items:
+                log_mail_attempt(subject, True, None)
             return True, None
         except smtplib.SMTPException as exc:
             # Anmelde-/Protokollfehler wiederholen sich beim zweiten Versuch genauso.
@@ -779,8 +795,14 @@ def send_mail(title, body, count=1):
             error = f"{type(exc).__name__}: {exc}"
             if tries_left:
                 time.sleep(5)
-    log_mail_attempt(title, count, False, error)
+    for subject, _ in items:
+        log_mail_attempt(subject, False, error)
     return False, error
+
+
+def send_mail(subject, body):
+    """Einzelne Mail (Testmail) — dieselbe Strecke wie die Meldungen."""
+    return send_mails([(subject, body)])
 
 
 def mail_status():
@@ -796,6 +818,16 @@ def mail_status():
         "lastTs": last.get("ts") if last else None,
         "lastError": last.get("error") if last else None,
     }
+
+
+def notification_subject(entry):
+    """Betreff der Mail. Bewusst für JEDE Meldung eindeutig: Gmail fasst Nachrichten mit
+    gleichem Betreff zu einem Gesprächsverlauf zusammen, dann klappen mehrere Signale zu
+    einer Zeile zusammen. Wert, Zeitfenster, Filter und Zeitpunkt machen ihn unterscheidbar."""
+    title, _ = notification_text(entry)
+    label = RANGE_LABELS.get(entry["range"], entry["range"])
+    stamp = time.strftime("%d.%m. %H:%M", time.localtime(entry.get("ts", 0) / 1000 or time.time()))
+    return f"{title} · {label} · {entry['filter']} · {stamp}"
 
 
 def notification_text(entry):
@@ -845,25 +877,11 @@ def notification_link(entry):
     )
 
 
-def alert_mail_content(entries):
-    """Eine Sammelmail für alle neuen Meldungen eines Prüfdurchlaufs. Ein Schwall
-    einzelner Mails wird von Gmail schnell ausgebremst; außerdem ist eine Mail mit
-    allen Treffern übersichtlicher. Je Treffer steht der Direkt-Link dabei."""
-    blocks = []
-    for entry in entries:
-        title, body = notification_text(entry)
-        blocks.append(f"{title}\n{body}\nDirekt öffnen: {notification_link(entry)}")
-    if len(entries) == 1:
-        subject, _ = notification_text(entries[0])
-    else:
-        names = []
-        for entry in entries:
-            name = entry.get("name") or entry["symbol"]
-            if name not in names:
-                names.append(name)
-        shown = ", ".join(names[:3]) + (" u.a." if len(names) > 3 else "")
-        subject = f"{len(entries)} neue Signale: {shown}"
-    return subject, "\n\n".join(blocks)
+def alert_mail(entry):
+    """(betreff, text) für EINE Meldung — mit Direkt-Link, der Asset, Zeitfenster und
+    Filter auf der Seite vorwählt."""
+    _, body = notification_text(entry)
+    return notification_subject(entry), f"{body}\n\nDirekt öffnen: {notification_link(entry)}"
 
 
 def send_test_mail():
@@ -874,7 +892,8 @@ def send_test_mail():
         "Versand für die Filter-Meldungen genauso.\n\n"
         f"Seite öffnen: {notification_base_url()}/"
     )
-    return send_mail("Aktienanalyse: Testmail", body)
+    # Zeitstempel auch hier, sonst stapelt Gmail die Testmails untereinander.
+    return send_mail(f"Aktienanalyse: Testmail · {time.strftime('%d.%m. %H:%M')}", body)
 
 
 def normalize_state_entry(value):
@@ -1051,9 +1070,9 @@ def run_alert_check():
         store_notifications(fresh)
         for item in fresh:
             send_windows_toast(*notification_text(item))
-        # Alle Treffer eines Durchlaufs in EINER Mail, mit Direkt-Link je Treffer.
-        subject, body = alert_mail_content(fresh)
-        send_mail(subject, body, count=len(fresh))
+        # Je Treffer eine eigene Mail (eindeutiger Betreff, damit Gmail sie nicht zu
+        # einem Verlauf zusammenklappt) — alle über eine SMTP-Verbindung.
+        send_mails([alert_mail(item) for item in fresh])
     return fresh
 
 
