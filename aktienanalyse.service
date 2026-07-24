@@ -9,6 +9,9 @@ Type=simple
 User=<pi-user>
 WorkingDirectory=/home/<pi-user>/Aktienanalyse
 Environment=AKTIENANALYSE_HOST=0.0.0.0
+# Ohne das puffert Python seine Ausgabe und Meldungen (z.B. Mailfehler) tauchen im
+# journal erst viel spaeter auf.
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /home/<pi-user>/Aktienanalyse/server.py
 Restart=always
 RestartSec=5

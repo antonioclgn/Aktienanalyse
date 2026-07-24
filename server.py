@@ -9,6 +9,7 @@ import os
 import smtplib
 import socket
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -37,9 +38,16 @@ WATCHLIST_FILE = DATA_DIR / "watchlist.json"       # aus config.json abgeleitet,
 NOTIFICATIONS_FILE = DATA_DIR / "notifications.json"
 ALERT_STATE_FILE = DATA_DIR / "alert_state.json"   # zuletzt gemeldeter Zustand je Filter+Wert
 MAIL_CONFIG_FILE = DATA_DIR / "mail_config.json"
+MAIL_LOG_FILE = DATA_DIR / "mail_log.json"         # letzte Versandversuche (Erfolg/Fehlertext)
 DEFAULT_PRESET_NAME = "Standard"  # muss zu index.html passen (die implizite Standard-Variante)
 ALERT_INTERVAL_SECONDS = 300
 MAX_NOTIFICATIONS = 200
+MAX_MAIL_LOG = 20
+# Nach einer Meldung ist derselbe Wert im selben Filter+Zeitfenster für diese Zeit
+# gesperrt: Kippt ein Indikator am Rand um seine Schwelle (green -> none -> green),
+# gäbe es sonst alle paar Minuten dieselbe Meldung erneut. Ein Richtungswechsel
+# (Kauf <-> Verkauf) durchbricht die Sperre, weil das eine echte neue Information ist.
+NOTIFY_COOLDOWN_SECONDS = 6 * 3600
 
 CNN_FEAR_GREED_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
 # CNNs eigene API liefert ab 14.07.2020 (ihre technische Untergrenze) bis zum 21.01.2021
@@ -692,11 +700,50 @@ def send_windows_toast(title, body):
         print(f"Windows-Benachrichtigung fehlgeschlagen: {exc}")
 
 
-def send_mail(title, body):
-    """Optionaler Mailversand. Ohne data/mail_config.json passiert schlicht nichts."""
-    config = read_json_file(MAIL_CONFIG_FILE, None)
-    if not config or not config.get("host") or not config.get("to"):
-        return
+def load_mail_config():
+    """Mail-Konfiguration lesen. Liefert (config, fehlertext). Wichtig ist die
+    Unterscheidung: gar nicht eingerichtet, vorhanden aber nicht lesbar (typisch:
+    mit sudo angelegt, der Dienstbenutzer darf nicht) oder unvollständig. Früher
+    sahen alle drei Fälle gleich aus — nämlich wie „es kommt einfach keine Mail"."""
+    if not MAIL_CONFIG_FILE.is_file():
+        return None, "nicht eingerichtet (data/mail_config.json fehlt)"
+    try:
+        config = json.loads(MAIL_CONFIG_FILE.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return None, f"data/mail_config.json nicht lesbar: {exc}"
+    except ValueError as exc:
+        return None, f"data/mail_config.json ist kein gültiges JSON: {exc}"
+    if not isinstance(config, dict):
+        return None, "data/mail_config.json enthält kein Objekt"
+    missing = [key for key in ("host", "to") if not config.get(key)]
+    if missing:
+        return None, f"data/mail_config.json unvollständig: {', '.join(missing)} fehlt"
+    return config, None
+
+
+def log_mail_attempt(subject, count, ok, error):
+    """Jeden Versuch festhalten — im Log des Dienstes UND in data/mail_log.json,
+    damit die Seite (Glocke) den letzten Stand anzeigen kann."""
+    stamp = time.strftime("%d.%m. %H:%M:%S")
+    # flush: als Dienst ist die Ausgabe gepuffert, sonst steht im journal erst viel später etwas.
+    print(f"[{stamp}] Mail „{subject}“: " + ("verschickt" if ok else f"FEHLER — {error}"), flush=True)
+    entry = {"ts": int(time.time()) * 1000, "ok": ok, "subject": subject,
+             "count": count, "error": error}
+    with _file_lock:
+        existing = read_json_file(MAIL_LOG_FILE, [])
+        if not isinstance(existing, list):
+            existing = []
+        write_json_file(MAIL_LOG_FILE, ([entry] + existing)[:MAX_MAIL_LOG])
+
+
+def send_mail(title, body, count=1):
+    """Mailversand. Liefert (ok, fehlertext) — der Fehler wird protokolliert und ist
+    über /api/alerts/notifications auf der Seite sichtbar, statt stumm zu verschwinden."""
+    config, config_error = load_mail_config()
+    if config_error:
+        log_mail_attempt(title, count, False, config_error)
+        return False, config_error
+
     message = EmailMessage()
     message["Subject"] = title
     message["From"] = config.get("from") or config.get("user")
@@ -705,7 +752,8 @@ def send_mail(title, body):
     port = int(config.get("port", 465))
     # "ssl" (üblich auf Port 465), "starttls" (üblich auf 587) oder "none".
     security = config.get("security") or ("ssl" if port == 465 else "starttls")
-    try:
+
+    def attempt():
         server = (smtplib.SMTP_SSL if security == "ssl" else smtplib.SMTP)(
             config["host"], port, timeout=30
         )
@@ -715,8 +763,39 @@ def send_mail(title, body):
             if config.get("user"):
                 server.login(config["user"], config.get("password", ""))
             server.send_message(message)
-    except (OSError, smtplib.SMTPException) as exc:
-        print(f"Mailversand fehlgeschlagen: {exc}")
+
+    error = None
+    for tries_left in (1, 0):
+        try:
+            attempt()
+            log_mail_attempt(title, count, True, None)
+            return True, None
+        except smtplib.SMTPException as exc:
+            # Anmelde-/Protokollfehler wiederholen sich beim zweiten Versuch genauso.
+            error = f"{type(exc).__name__}: {exc}"
+            break
+        except OSError as exc:
+            # Netz/TLS — auf dem Pi durchaus mal vorübergehend. Einmal nachfassen.
+            error = f"{type(exc).__name__}: {exc}"
+            if tries_left:
+                time.sleep(5)
+    log_mail_attempt(title, count, False, error)
+    return False, error
+
+
+def mail_status():
+    """Für die Seite: ist Mail eingerichtet und wie lief der letzte Versand?"""
+    config, config_error = load_mail_config()
+    log = read_json_file(MAIL_LOG_FILE, [])
+    last = log[0] if isinstance(log, list) and log else None
+    return {
+        "configured": config is not None,
+        "configError": config_error,
+        "to": (config or {}).get("to"),
+        "lastOk": last.get("ok") if last else None,
+        "lastTs": last.get("ts") if last else None,
+        "lastError": last.get("error") if last else None,
+    }
 
 
 def notification_text(entry):
@@ -766,19 +845,54 @@ def notification_link(entry):
     )
 
 
+def alert_mail_content(entries):
+    """Eine Sammelmail für alle neuen Meldungen eines Prüfdurchlaufs. Ein Schwall
+    einzelner Mails wird von Gmail schnell ausgebremst; außerdem ist eine Mail mit
+    allen Treffern übersichtlicher. Je Treffer steht der Direkt-Link dabei."""
+    blocks = []
+    for entry in entries:
+        title, body = notification_text(entry)
+        blocks.append(f"{title}\n{body}\nDirekt öffnen: {notification_link(entry)}")
+    if len(entries) == 1:
+        subject, _ = notification_text(entries[0])
+    else:
+        names = []
+        for entry in entries:
+            name = entry.get("name") or entry["symbol"]
+            if name not in names:
+                names.append(name)
+        shown = ", ".join(names[:3]) + (" u.a." if len(names) > 3 else "")
+        subject = f"{len(entries)} neue Signale: {shown}"
+    return subject, "\n\n".join(blocks)
+
+
+def send_test_mail():
+    """Testmail (Knopf in der Glocke bzw. `server.py --mail-test`). Gibt den echten
+    Fehlertext zurück, damit auf dem Pi sofort klar ist, woran es hakt."""
+    body = (
+        "Testmail der Aktienanalyse. Wenn diese Mail ankommt, funktioniert der "
+        "Versand für die Filter-Meldungen genauso.\n\n"
+        f"Seite öffnen: {notification_base_url()}/"
+    )
+    return send_mail("Aktienanalyse: Testmail", body)
+
+
 def normalize_state_entry(value):
-    """Zustand je Filter+Zeitfenster+Wert: {signal, notifiedBars} — welche
-    Kerzen-Meilensteine schon gemeldet wurden. Ältere Stände (reiner String, oder
-    das frühere Tage-Format mit since/notifiedDays) werden verträglich übernommen;
-    bereits gemeldete Tages-Meilensteine gehen dabei verloren (einmaliger Übergang)."""
+    """Zustand je Filter+Zeitfenster+Wert: {signal, notifiedBars, notifiedSignal,
+    notifiedAt} — welche Kerzen-Meilensteine schon gemeldet wurden, welche Richtung
+    zuletzt tatsächlich gemeldet wurde und wann (für die 6-Stunden-Sperre). Ältere
+    Stände (reiner String, oder ohne die beiden Sperr-Felder) werden verträglich
+    übernommen: ohne Zeitstempel gilt die Sperre schlicht als abgelaufen."""
     if isinstance(value, dict):
         return {
             "signal": value.get("signal", "none"),
             "notifiedBars": value.get("notifiedBars") or [],
+            "notifiedSignal": value.get("notifiedSignal") or "none",
+            "notifiedAt": value.get("notifiedAt") or 0,
         }
     if isinstance(value, str):
-        return {"signal": value, "notifiedBars": []}
-    return {"signal": "none", "notifiedBars": []}
+        return {"signal": value, "notifiedBars": [], "notifiedSignal": "none", "notifiedAt": 0}
+    return {"signal": "none", "notifiedBars": [], "notifiedSignal": "none", "notifiedAt": 0}
 
 
 def store_notifications(entries):
@@ -896,28 +1010,50 @@ def run_alert_check():
                             fresh.append(make_note(sustained_bars=threshold))
                     return notified
 
+                def keep_notified(state_signal, bars):
+                    """Zustand fortschreiben, ohne das Sperr-Gedächtnis zu verlieren."""
+                    return {
+                        "signal": state_signal,
+                        "notifiedBars": bars,
+                        "notifiedSignal": prev["notifiedSignal"],
+                        "notifiedAt": prev["notifiedAt"],
+                    }
+
+                cooling = now - prev["notifiedAt"] < NOTIFY_COOLDOWN_SECONDS
+
                 if not signal:
-                    current[key] = {"signal": "none", "notifiedBars": []}
-                elif prev["signal"] != signal:
-                    # Neuer bzw. erstmals gesehener Ausschlag (auch Richtungswechsel Kauf<->Verkauf):
-                    # sofort melden. run_bars kommt aus der Historie, damit ein schon länger
-                    # laufendes Signal die fälligen Meilensteine sofort nachholt.
-                    fresh.append(make_note())
-                    notified = fire_due_milestones([])
-                    current[key] = {"signal": signal, "notifiedBars": notified}
-                else:
+                    # Kein Ausschlag mehr. Die Sperre muss trotzdem stehen bleiben, sonst
+                    # wäre jedes kurze Wegkippen des Signals wieder ein "neuer" Ausschlag.
+                    current[key] = keep_notified("none", prev["notifiedBars"])
+                elif prev["signal"] == signal:
                     # Unverändert am Ausschlagen: nur bei neu erreichten Kerzen-Schwellen melden.
-                    notified = fire_due_milestones(prev["notifiedBars"])
-                    current[key] = {"signal": signal, "notifiedBars": notified}
+                    current[key] = keep_notified(signal, fire_due_milestones(prev["notifiedBars"]))
+                elif cooling and prev["notifiedSignal"] == signal:
+                    # Dieselbe Richtung wie die letzte Meldung, und die ist keine 6 Stunden her:
+                    # das ist Zappeln um die Schwelle, kein neuer Ausschlag. Als Fortsetzung
+                    # behandeln — dann kommen auch die Dauer-Meilensteine nicht doppelt.
+                    current[key] = keep_notified(signal, prev["notifiedBars"])
+                else:
+                    # Neuer bzw. erstmals gesehener Ausschlag (auch Richtungswechsel Kauf<->Verkauf,
+                    # der die Sperre bewusst durchbricht): sofort melden. run_bars kommt aus der
+                    # Historie, damit ein schon länger laufendes Signal die fälligen Meilensteine
+                    # sofort nachholt.
+                    fresh.append(make_note())
+                    current[key] = {
+                        "signal": signal,
+                        "notifiedBars": fire_due_milestones([]),
+                        "notifiedSignal": signal,
+                        "notifiedAt": now,
+                    }
 
     write_json_file(ALERT_STATE_FILE, current)
     if fresh:
         store_notifications(fresh)
         for item in fresh:
-            title, body = notification_text(item)
-            send_windows_toast(title, body)
-            # In der Mail zusätzlich ein Direkt-Link, der Asset/Zeitfenster/Filter vorwählt.
-            send_mail(title, f"{body}\n\nDirekt öffnen: {notification_link(item)}")
+            send_windows_toast(*notification_text(item))
+        # Alle Treffer eines Durchlaufs in EINER Mail, mit Direkt-Link je Treffer.
+        subject, body = alert_mail_content(fresh)
+        send_mail(subject, body, count=len(fresh))
     return fresh
 
 
@@ -996,11 +1132,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/alerts/notifications":
+            status = mail_status()
             self._send_json({
                 "notifications": read_json_file(NOTIFICATIONS_FILE, []),
                 "watchlist": read_json_file(WATCHLIST_FILE, {}),
-                "mailConfigured": bool(read_json_file(MAIL_CONFIG_FILE, None)),
+                "mailConfigured": status["configured"],
+                "mailStatus": status,
                 "intervalSeconds": ALERT_INTERVAL_SECONDS,
+                "cooldownSeconds": NOTIFY_COOLDOWN_SECONDS,
             })
             return
 
@@ -1109,6 +1248,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
 
+        # Testmail aus der Glocke heraus: meldet den echten Fehler zurück, statt still
+        # zu scheitern — damit auf dem Pi ohne SSH sichtbar wird, woran es hakt.
+        if parsed.path == "/api/alerts/mail-test":
+            ok, error = send_test_mail()
+            self._send_json({"ok": ok, "error": error})
+            return
+
         # Sofort prüfen (z.B. direkt nach dem Markieren eines Filters).
         if parsed.path == "/api/alerts/check":
             try:
@@ -1122,7 +1268,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
+def mail_setup_line():
+    """Eine Zeile fuer das Log: Empfaenger und Server, oder warum keine Mail kommt."""
+    config, error = load_mail_config()
+    if error:
+        return f"Mailversand: {error}"
+    return f"Mailversand an {config['to']} ueber {config['host']}:{config.get('port', 465)}"
+
+
 def main():
+    if "--mail-test" in sys.argv:
+        print(mail_setup_line())
+        ok, error = send_test_mail()
+        print("Testmail verschickt." if ok else f"Testmail fehlgeschlagen: {error}")
+        return 0 if ok else 1
+
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     threading.Thread(target=alert_loop, daemon=True).start()
     watched = len((read_json_file(WATCHLIST_FILE, {}) or {}).get("filters") or [])
@@ -1130,11 +1290,13 @@ def main():
     hint = " (im Netzwerk erreichbar)" if HOST == "0.0.0.0" else ""
     print(f"Server laeuft auf http://{shown_host}:{PORT}{hint}")
     print(
-        f"Ueberwachung aktiv: {watched} Filter, Pruefung alle {ALERT_INTERVAL_SECONDS // 60} Minuten"
-        + (" (Mailversand konfiguriert)" if MAIL_CONFIG_FILE.is_file() else " (ohne Mailversand)")
+        f"Ueberwachung aktiv: {watched} Filter, Pruefung alle {ALERT_INTERVAL_SECONDS // 60} Minuten,"
+        f" Meldesperre {NOTIFY_COOLDOWN_SECONDS // 3600} Stunden je Signal"
     )
+    print(mail_setup_line())
     server.serve_forever()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
