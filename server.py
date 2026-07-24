@@ -40,6 +40,16 @@ NOTIFICATIONS_FILE = DATA_DIR / "notifications.json"
 ALERT_STATE_FILE = DATA_DIR / "alert_state.json"   # zuletzt gemeldeter Zustand je Filter+Wert
 MAIL_CONFIG_FILE = DATA_DIR / "mail_config.json"
 MAIL_LOG_FILE = DATA_DIR / "mail_log.json"         # letzte Versandversuche (Erfolg/Fehlertext)
+# Nur diese Dateitypen liefert der Server mit passendem Typ aus (alles andere als
+# Download-Bytes). Ohne den richtigen Typ zeigt der Browser z.B. das Symbol nicht an.
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+}
 DEFAULT_PRESET_NAME = "Standard"  # muss zu index.html passen (die implizite Standard-Variante)
 ALERT_INTERVAL_SECONDS = 300
 MAX_NOTIFICATIONS = 200
@@ -1195,7 +1205,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        content_type = "text/html; charset=utf-8" if file_path.suffix == ".html" else "application/octet-stream"
+        content_type = CONTENT_TYPES.get(file_path.suffix, "application/octet-stream")
         body = file_path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", content_type)
