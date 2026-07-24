@@ -751,10 +751,10 @@ def _local_ip():
 
 def notification_base_url():
     """Basis-URL für die Links in den Mails. In data/mail_config.json per "baseUrl"
-    überschreibbar; sonst automatisch die LAN-IP dieses Servers (passt für den Pi)."""
+    überschreibbar; standardmäßig die feste Adresse des Raspberry Pi."""
     config = read_json_file(MAIL_CONFIG_FILE, None) or {}
     base = (config.get("baseUrl") or "").strip().rstrip("/")
-    return base or f"http://{_local_ip()}:{PORT}"
+    return base or f"http://192.168.178.134:{PORT}"
 
 
 def notification_link(entry):
