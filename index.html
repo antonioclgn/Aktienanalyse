@@ -94,6 +94,17 @@
             <label><input type="checkbox" data-watch-range="5y"> 5 Jahre</label>
             <label><input type="checkbox" data-watch-range="10y"> 10 Jahre</label>
           </div>
+          <div style="margin-top: 4px; display: flex; align-items: center; gap: 6px;">
+            <span>Erst benachrichtigen nach:</span>
+            <select id="watch-delay-select" style="font-size: 11px;">
+              <option value="0">Sofort</option>
+              <option value="1">1 Tag</option>
+              <option value="2">2 Tagen</option>
+              <option value="3">3 Tagen</option>
+              <option value="7">7 Tagen</option>
+              <option value="14">14 Tagen</option>
+            </select>
+          </div>
         </div>
         <div id="watched-filters" style="color: #666; font-size: 11px; margin-bottom: 8px;"></div>
         <!-- Einstellungen je Indikator werden aus der Registry erzeugt (renderIndicatorSettings). -->
@@ -1309,6 +1320,10 @@
         '1d': 'Tag', '5d': 'Woche', '1mo': 'Monat',
         '1y': 'Jahr', '5y': '5 Jahre', '10y': '10 Jahre',
       };
+      // Mindestdauer (echte Handelstage), bevor die erste Meldung eines Filters kommt.
+      // 0 = Sofort (bisheriges Verhalten). Werte spiegeln die Optionen im Dropdown.
+      const DEFAULT_MIN_DELAY_DAYS = 0;
+      const MIN_DELAY_OPTIONS = [0, 1, 2, 3, 7, 14];
       let notifications = [];
       let serverInfo = { mailConfigured: false, intervalSeconds: 300, mailStatus: null };
 
@@ -1324,17 +1339,18 @@
         return stored
           .map(entry => {
             // Ältere Stände: nur Name (String) oder ein einzelnes Zeitfenster ({name, range}).
-            if (typeof entry === 'string') return { name: entry, ranges: [DEFAULT_ALERT_RANGE] };
+            if (typeof entry === 'string') return { name: entry, ranges: [DEFAULT_ALERT_RANGE], minDelayDays: DEFAULT_MIN_DELAY_DAYS };
             if (!entry || !entry.name) return null;
             const ranges = Array.isArray(entry.ranges)
               ? entry.ranges
               : (entry.range ? [entry.range] : [DEFAULT_ALERT_RANGE]);
-            return { name: entry.name, ranges };
+            const minDelayDays = MIN_DELAY_OPTIONS.includes(entry.minDelayDays) ? entry.minDelayDays : DEFAULT_MIN_DELAY_DAYS;
+            return { name: entry.name, ranges, minDelayDays };
           })
           .filter(entry => entry)
           .filter(entry => !hasPresets || known(entry.name))
           // Nur bekannte Zeitfenster behalten; ohne gültiges Fenster fällt der Filter raus.
-          .map(entry => ({ name: entry.name, ranges: entry.ranges.filter(r => RANGE_LABELS[r]) }))
+          .map(entry => ({ name: entry.name, ranges: entry.ranges.filter(r => RANGE_LABELS[r]), minDelayDays: entry.minDelayDays }))
           .filter(entry => entry.ranges.length);
       }
 
@@ -1373,10 +1389,15 @@
           box.disabled = disabled;
         });
 
+        const delaySelect = document.getElementById('watch-delay-select');
+        delaySelect.value = String(entry ? entry.minDelayDays : DEFAULT_MIN_DELAY_DAYS);
+        delaySelect.disabled = disabled || !entry;
+
         const active = watchedFilters();
         document.getElementById('watched-filters').textContent = active.length
           ? 'Überwacht: ' + active
-              .map(f => `${f.name} (${f.ranges.map(r => RANGE_LABELS[r]).join(', ')})`)
+              .map(f => `${f.name} (${f.ranges.map(r => RANGE_LABELS[r]).join(', ')}`
+                + `${f.minDelayDays ? `, ab ${f.minDelayDays} Tag${f.minDelayDays === 1 ? '' : 'en'}` : ''})`)
               .join('; ') + ' — für alle Favoriten'
           : 'Kein Filter überwacht (☆ markiert die Variante und wählt ein Zeitfenster).';
       }
@@ -1409,15 +1430,25 @@
             ? [...new Set([...entry.ranges, range])]
             : entry.ranges.filter(r => r !== range);
           next = ranges.length
-            ? watched.map(f => (f.name === name ? { name, ranges } : f))
+            ? watched.map(f => (f.name === name ? { ...f, ranges } : f))
             : watched.filter(f => f.name !== name);
         } else if (on) {
-          next = [...watched, { name, ranges: [range] }];
+          next = [...watched, { name, ranges: [range], minDelayDays: DEFAULT_MIN_DELAY_DAYS }];
         } else {
           return;
         }
         saveWatchedFilters(next);
         if (on) requestCheck();
+      }
+
+      // Mindestdauer für den gewählten Filter setzen: erst nach so vielen Handelstagen
+      // ununterbrochenen Ausschlags kommt die erste Meldung (0 = sofort).
+      function setWatchDelay(days) {
+        const name = document.getElementById('preset-select').value;
+        if (name === CUSTOM_PRESET_LABEL || !filterSettingsByName(name)) return;
+        const watched = loadWatchedFilters();
+        if (!watched.some(f => f.name === name)) return; // Filter muss erst überwacht werden (☆)
+        saveWatchedFilters(watched.map(f => (f.name === name ? { ...f, minDelayDays: days } : f)));
       }
 
       // Geräteübergreifende Synchronisation (Variante A): Der Server ist die Quelle
@@ -1604,6 +1635,9 @@
         box.addEventListener('change', (event) => {
           toggleWatchRange(event.target.dataset.watchRange, event.target.checked);
         });
+      });
+      document.getElementById('watch-delay-select').addEventListener('change', (event) => {
+        setWatchDelay(Number(event.target.value));
       });
 
       document.getElementById('notifications-toggle').addEventListener('click', (event) => {

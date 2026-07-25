@@ -1079,7 +1079,10 @@ def derive_watchlist(config):
             settings = DEFAULT_FILTER_SETTINGS  # implizite Standard-Variante
         else:
             continue  # Variante gelöscht -> Überwachung entfällt
-        filters.append({"name": name, "ranges": entry.get("ranges") or [], "settings": settings})
+        filters.append({
+            "name": name, "ranges": entry.get("ranges") or [], "settings": settings,
+            "minDelayDays": entry.get("minDelayDays") or 0,
+        })
     return {"favorites": favorites, "filters": filters, "updated": int(time.time())}
 
 
@@ -1118,6 +1121,9 @@ def run_alert_check(force=False):
         if not name:
             continue
         settings = {**DEFAULT_FILTER_SETTINGS, **(entry.get("settings") or {})}
+        # Mindestdauer, bevor überhaupt eine erste Meldung kommt (0 = sofort, wie bisher).
+        # Immer in echten Handelstagen gemessen, unabhängig vom überwachten Zeitfenster.
+        min_delay_days = entry.get("minDelayDays") or 0
         # Ein Filter kann mehrere Zeitfenster überwachen (z.B. 5 und 10 Jahre);
         # ältere Stände hatten nur ein einzelnes "range".
         raw_ranges = entry.get("ranges")
@@ -1181,7 +1187,14 @@ def run_alert_check(force=False):
                     der Server eine schon laufende Serie zum ersten Mal sieht —, kommt NUR die
                     höchste: sie enthält die Aussage der kleineren. Sonst kämen mehrere Mails
                     gleichzeitig, die dasselbe sagen. `first_alert` ist die Sofortmeldung eines
-                    neuen Ausschlags; sie entfällt, wenn ohnehin eine Dauer-Meldung rausgeht."""
+                    neuen Ausschlags; sie entfällt, wenn ohnehin eine Dauer-Meldung rausgeht.
+
+                    Ist eine Mindestdauer eingestellt (`min_delay_days`), bleibt es bis dahin
+                    ganz still — auch die Sofortmeldung entfällt. Läuft die Serie beim ersten
+                    Blick schon länger als die Mindestdauer, meldet die erste Mail gleich mit
+                    dem passenden „seit X Tagen"-Text (über die normale Meilenstein-Logik unten)."""
+                    if min_delay_days and open_seconds(since, now, trading) < min_delay_days * OPEN_SECONDS_PER_DAY:
+                        return already
                     due = [m for m in DURATION_MILESTONES
                            if m not in already
                            and milestone_reached(since, now, m, range_key, trading)]

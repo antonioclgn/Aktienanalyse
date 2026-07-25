@@ -57,6 +57,14 @@ richtet sich damit automatisch nach der Börse des Wertes.
 Die Meldungen erscheinen als Windows-Benachrichtigung, optional per E-Mail und immer in
 der Glocke oben auf der Seite.
 
+Standardmäßig kommt die erste Meldung sofort beim Ausschlag. Wer das für einen Filter zu
+häufig findet, kann in den Balken-Einstellungen unter „Überwachen in diesen Zeitfenstern“
+eine **Mindestdauer** einstellen (1, 2, 3, 7 oder 14 Tage) — dann bleibt es bis dahin ganz
+still, und die erste Meldung kommt erst, wenn der Filter so lange ununterbrochen
+ausgeschlagen ist. Gezählt wird dabei immer in echten Handelstagen, unabhängig vom
+überwachten Zeitfenster. Läuft ein Signal beim ersten Blick schon länger, meldet die erste
+Mail gleich mit dem passenden „seit X Tagen“-Text.
+
 ### E-Mail einrichten (optional)
 
 `data/mail_config.example.json` nach `data/mail_config.json` kopieren und ausfüllen.

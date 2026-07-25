@@ -24,7 +24,13 @@
       "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\test_alerts.py\" 2>&1 | Select-String -Pattern \"^\\(OK|FEHL|---\\)\" | Select-Object -Last 30; \"exit=$LASTEXITCODE\")",
       "PowerShell(cd \"c:\\\\Users\\\\anton\\\\programmierung\\\\Aktienanalyse\"; python -m py_compile server.py; if \\($?\\) { \"py_compile OK\" }; $env:AKTIENANALYSE_PORT=\"8099\"; $p = Start-Process -FilePath python -ArgumentList \"server.py\" -NoNewWindow -PassThru -RedirectStandardOutput out.log -RedirectStandardError err.log; Start-Sleep -Seconds 4; Stop-Process -Id $p.Id -Force; Get-Content out.log; \"--- stderr ---\"; Get-Content err.log; Remove-Item out.log, err.log)",
       "PowerShell(cd \"c:\\\\Users\\\\anton\\\\programmierung\\\\Aktienanalyse\"; $env:AKTIENANALYSE_PORT=\"8099\"; $p = Start-Process -FilePath python -ArgumentList \"-u\",\"server.py\" -NoNewWindow -PassThru -RedirectStandardOutput out.log -RedirectStandardError err.log; Start-Sleep -Seconds 5; Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 1; Get-Content out.log; \"--- stderr ---\"; Get-Content err.log; Remove-Item out.log, err.log -ErrorAction SilentlyContinue)",
-      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\beispiele.py\")"
+      "PowerShell(python \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\0ad6ec70-4fcc-44b3-bc2e-0c4e00600c76\\\\scratchpad\\\\beispiele.py\")",
+      "Bash(python -c \"import json;d=json.load\\(open\\('config.json',encoding='utf-8'\\)\\);print\\(json.dumps\\({k:\\(v if k!='presets' else {kk:'...' for kk in v}\\) for k,v in d.items\\(\\)}, indent=2, ensure_ascii=False\\)\\)\")",
+      "Bash(python -c \"import json;d=json.load\\(open\\('watchlist.json',encoding='utf-8'\\)\\);print\\(json.dumps\\({**d,'filters':[{k:v for k,v in f.items\\(\\) if k!='settings'} for f in d.get\\('filters',[]\\)]}, indent=2, ensure_ascii=False\\)\\)\")",
+      "PowerShell(python -m py_compile server.py; echo \"EXIT:$LASTEXITCODE\")",
+      "Bash(py -3 --version)",
+      "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process -Filter \"Name='\\\\''python.exe'\\\\''\" | Where-Object { $_.CommandLine -like '\\\\''*server.py*'\\\\'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force; Write-Output \"gestoppt: PID $\\($_.ProcessId\\)\" }')",
+      "Bash(curl -s -o /dev/null -w \"GET / -> %{http_code} \\(erwartet: Verbindungsfehler\\)\\\\n\" --max-time 3 http://127.0.0.1:8000/)"
     ]
   }
 }
