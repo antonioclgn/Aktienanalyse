@@ -30,7 +30,8 @@
       "PowerShell(python -m py_compile server.py; echo \"EXIT:$LASTEXITCODE\")",
       "Bash(py -3 --version)",
       "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process -Filter \"Name='\\\\''python.exe'\\\\''\" | Where-Object { $_.CommandLine -like '\\\\''*server.py*'\\\\'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force; Write-Output \"gestoppt: PID $\\($_.ProcessId\\)\" }')",
-      "Bash(curl -s -o /dev/null -w \"GET / -> %{http_code} \\(erwartet: Verbindungsfehler\\)\\\\n\" --max-time 3 http://127.0.0.1:8000/)"
+      "Bash(curl -s -o /dev/null -w \"GET / -> %{http_code} \\(erwartet: Verbindungsfehler\\)\\\\n\" --max-time 3 http://127.0.0.1:8000/)",
+      "Bash(node -e ' *)"
     ]
   }
 }

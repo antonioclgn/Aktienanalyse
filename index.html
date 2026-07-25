@@ -758,6 +758,103 @@
         return ranges;
       }
 
+      // ---------------------------------------------------------------------
+      // Handelszeit-Berechnung fürs Chart — 1:1-Port von server.py (Zeilen 517-711):
+      // is_trading_day, align_to_trading_window, open_seconds. Damit die Verzögerungs-
+      // Einstellung ("Erst benachrichtigen nach ...") im Chart genau denselben Zeitpunkt
+      // zeigt, zu dem auch wirklich eine Mail käme. Zeitstempel sind wie überall im
+      // Frontend Unix-Sekunden (siehe z.B. `new Date(timestamps[i] * 1000)`).
+      // ---------------------------------------------------------------------
+      const QUIET_END_SECONDS = 7 * 3600 + 30 * 60;      // ab 07:30 zählt Handelszeit
+      const QUIET_START_SECONDS = 23 * 3600;             // ab 23:00 ist Ruhe
+      const OPEN_SECONDS_PER_DAY = QUIET_START_SECONDS - QUIET_END_SECONDS;
+      const TRADING_GRID_RANGES = new Set(['5d', '1mo', '1y']);
+
+      function dayKey(ts) {
+        const d = new Date(ts * 1000);
+        return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      }
+
+      function daytimeSeconds(ts) {
+        const d = new Date(ts * 1000);
+        return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+      }
+
+      // Pendant zu trading_days_from() (server.py:628-641): welche Kalendertage im
+      // aktuell geladenen Kerzenraster tatsächlich gehandelt wurden. Nur für Zeitfenster
+      // mit ausreichend dichtem Tagesraster aussagekräftig (server.py:529-532) — sonst
+      // entscheidet allein Mo-Fr (tradingDays = null).
+      function tradingDaysFromTimestamps(timestamps, rangeKey) {
+        if (!TRADING_GRID_RANGES.has(rangeKey)) return null;
+        const days = new Set();
+        timestamps.forEach(t => days.add(dayKey(t)));
+        return days.size ? days : null;
+      }
+
+      function isTradingDay(ts, tradingDays) {
+        if (tradingDays) return tradingDays.has(dayKey(ts));
+        const wd = new Date(ts * 1000).getDay(); // 0 = So, 6 = Sa
+        return wd >= 1 && wd <= 5;
+      }
+
+      // Port von align_to_trading_window() (server.py:660-676).
+      function alignToTradingWindow(ts, tradingDays) {
+        for (let i = 0; i < 14; i++) {
+          const daytime = daytimeSeconds(ts);
+          const midnight = ts - daytime;
+          if (isTradingDay(ts, tradingDays)) {
+            if (daytime < QUIET_END_SECONDS) return midnight + QUIET_END_SECONDS;
+            if (daytime < QUIET_START_SECONDS) return ts;
+          }
+          ts = midnight + 86400 + QUIET_END_SECONDS;
+        }
+        return ts;
+      }
+
+      // Port von open_seconds() (server.py:689-711): vergangene Handelszeit zwischen
+      // zwei Zeitpunkten, ohne Nächte/Wochenenden/Feiertage.
+      function openSeconds(start, end, tradingDays) {
+        let total = 0, cursor = start;
+        while (cursor < end) {
+          const daytime = daytimeSeconds(cursor);
+          const midnight = cursor - daytime;
+          const dayEnd = midnight + 86400;
+          const chunkEnd = Math.min(dayEnd, end);
+          if (isTradingDay(cursor, tradingDays)) {
+            const overlap = Math.min(chunkEnd, midnight + QUIET_START_SECONDS)
+              - Math.max(cursor, midnight + QUIET_END_SECONDS);
+            total += Math.max(0, overlap);
+          }
+          cursor = chunkEnd;
+        }
+        return total;
+      }
+
+      // Kürzt jeden Signal-Lauf auf den Teil ab dem Zeitpunkt, an dem die eingestellte
+      // Mindestdauer (in echten Handelstagen) erreicht ist — genau der Moment, an dem
+      // auch die erste Mail käme (vgl. fire_due_milestones() in server.py:1176-1200).
+      // Läufe, die die Schwelle nie erreichen, entfallen ganz. minDelayDays = 0 lässt
+      // die Läufe unverändert (heutiges Verhalten).
+      function applyMinDelay(ranges, timestamps, minDelayDays, tradingDays) {
+        if (!minDelayDays) return ranges;
+        const thresholdSeconds = minDelayDays * OPEN_SECONDS_PER_DAY;
+        const trimmed = [];
+        ranges.forEach(r => {
+          if (r.type == null) { trimmed.push(r); return; }
+          const since = alignToTradingWindow(r.startTs, tradingDays);
+          let confirmedIndex = null;
+          for (let i = r.startIndex; i <= r.endIndex; i++) {
+            if (openSeconds(since, timestamps[i], tradingDays) >= thresholdSeconds) {
+              confirmedIndex = i;
+              break;
+            }
+          }
+          if (confirmedIndex == null) return;
+          trimmed.push({ ...r, startIndex: confirmedIndex, startTs: timestamps[confirmedIndex] });
+        });
+        return trimmed;
+      }
+
       // Kumulierter (laufender) Durchschnitt: result[i] = Durchschnitt von series[0..i].
       // Dadurch bewegt sich die Linie (statt starr zu sein) und landet am rechten
       // Rand exakt beim Gesamtdurchschnitt des Zeitraums (= derselbe Wert wie "Ø" im Text).
@@ -806,7 +903,11 @@
           priceVsMaPctAvg: data.priceVsMaPctAvg, maWindow: data.maWindow,
         };
         const built = buildIndicators(ctx, highlightSettings);
-        const highlightRanges = computeHighlightRanges(built, data.timestamps, highlightSettings);
+        const rawRanges = computeHighlightRanges(built, data.timestamps, highlightSettings);
+        // Ist der aktuelle Filter überwacht und hat eine Mindestdauer eingestellt, zeigen
+        // die Balken nur den Teil eines Laufs, der auch wirklich eine Mail ausgelöst hätte.
+        const tradingDays = tradingDaysFromTimestamps(data.timestamps, currentRange);
+        const highlightRanges = applyMinDelay(rawRanges, data.timestamps, currentWatchDelayDays(), tradingDays);
 
         renderChart(data.closes, data.timestamps, currentRange, data.movingAverage, sharedChartPadLeft, highlightRanges);
 
@@ -1358,6 +1459,16 @@
         localStorage.setItem(WATCHED_FILTERS_KEY, JSON.stringify(entries));
         updateWatchUi();
         pushConfig();
+        // Stern, Zeitfenster oder Verzögerung können die Balken des gerade sichtbaren
+        // Charts betreffen (siehe currentWatchDelayDays) — sofort neu zeichnen.
+        if (lastChartData) rerenderHighlightCharts();
+      }
+
+      // Verzögerung des aktuell in preset-select gewählten Filters, 0 wenn nicht überwacht.
+      function currentWatchDelayDays() {
+        const name = document.getElementById('preset-select').value;
+        const entry = loadWatchedFilters().find(f => f.name === name);
+        return entry ? entry.minDelayDays : 0;
       }
 
       function filterSettingsByName(name) {
