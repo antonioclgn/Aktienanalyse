@@ -17,12 +17,16 @@
 <style>
   /* Verhindert, dass mobile Browser die Schrift automatisch vergrößern (Font-Boosting) —
      sonst sieht die Seite am Handy „aufgebläht" aus. */
-  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-  body { margin: 0; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; height: 100%; overflow-y: hidden; }
+  body { margin: 0; height: 100vh; overflow-y: hidden; display: flex; flex-direction: column; }
 </style>
 </head>
 <body>
-  <div style="position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #eee;">
+  <div style="position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #eee; flex: 0 0 auto;">
+    <div style="position: relative; max-width: 400px; margin-right: auto;">
+      <input id="symbol-search" type="text" placeholder="Aktie oder ETF suchen (z.B. MSCI World)" style="width: 100%; box-sizing: border-box;">
+      <ul id="suggestions" style="list-style: none; margin: 0; padding: 0; position: absolute; width: 100%; background: white; border: 1px solid #ccc; display: none;"></ul>
+    </div>
     <span id="notifications-status" style="font-size: 11px; color: #999;"></span>
     <button id="notifications-toggle" type="button" style="cursor: pointer; font-size: 13px;">
       🔔 Benachrichtigungen <span id="notifications-badge" style="display: none; background: #dc2626; color: white; border-radius: 8px; padding: 0 5px; font-size: 11px;"></span>
@@ -41,13 +45,9 @@
     </div>
   </div>
 
-  <div class="dashboard-layout" style="display: flex; align-items: flex-start;">
-    <div style="flex: 1; min-width: 0; padding: 8px 16px 8px 8px; box-sizing: border-box;">
+  <div class="dashboard-layout" style="display: flex; align-items: flex-start; flex: 1; min-height: 0;">
+    <div style="flex: 0 1 624px; min-width: 0; padding: 8px 16px 8px 8px; box-sizing: border-box; height: 100%; overflow-y: auto; overflow-x: hidden;">
 
-      <div style="position: relative; max-width: 400px;">
-        <input id="symbol-search" type="text" placeholder="Aktie oder ETF suchen (z.B. MSCI World)" style="width: 100%; box-sizing: border-box;">
-        <ul id="suggestions" style="list-style: none; margin: 0; padding: 0; position: absolute; width: 100%; background: white; border: 1px solid #ccc; display: none;"></ul>
-      </div>
       <p>Ausgewählt: <span id="selected-instrument">iShares Core S&P 500 UCITS ETF USD (Acc) (SXR8.DE)</span>
         <button id="favorite-star" type="button" title="Zu Favoriten" style="background: none; border: none; cursor: pointer; font-size: 18px; line-height: 1; vertical-align: middle; padding: 0;">☆</button>
       </p>
@@ -72,10 +72,8 @@
       <div id="indicator-charts"></div>
     </div>
 
-    <aside class="sidebar" style="width: 28vw; min-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; position: sticky; top: 0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column;">
-      <h2 style="font-size: 14px; margin-top: 0;">Favoriten</h2>
-      <ul id="favorites-list" style="list-style: none; padding: 0; margin: 0;"></ul>
-      <section class="bar-settings" style="margin-top: 16px; padding-top: 10px; border-top: 1px solid #ccc; min-height: 25vh; font-size: 12px;">
+    <aside class="bar-settings-column" style="flex: 1 1 300px; min-width: 300px; max-width: 500px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; height: 100%; overflow-y: auto; overflow-x: hidden;">
+      <section class="bar-settings" style="padding-bottom: 24px; min-height: 25vh; font-size: 12px;">
         <h2 style="font-size: 14px; margin: 0 0 8px;">Balken-Einstellungen</h2>
         <div style="color: #666; margin-bottom: 6px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen. Gilt für alle Werte.</div>
         <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
@@ -111,6 +109,11 @@
         <div id="indicator-settings"></div>
       </section>
     </aside>
+
+    <aside class="favorites-column" style="flex: 0 0 auto; width: 18vw; min-width: 230px; max-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; height: 100%; overflow-y: auto; overflow-x: hidden;">
+      <h2 style="font-size: 14px; margin-top: 0;">Favoriten</h2>
+      <ul id="favorites-list" style="list-style: none; padding: 0; margin: 0;"></ul>
+    </aside>
   </div>
 
     <script>
@@ -135,6 +138,7 @@
       const HIGHLIGHT_SETTINGS_KEY = 'aktienanalyse-highlight-settings'; // alt: je Symbol
       const ACTIVE_SETTINGS_KEY = 'aktienanalyse-highlight-active';
       const PRESETS_KEY = 'aktienanalyse-highlight-presets';
+      const ARCHIVED_INDICATORS_KEY = 'aktienanalyse-archived-indicators';
       const DEFAULT_PRESET_NAME = 'Standard';
       const CUSTOM_PRESET_LABEL = 'Eigene (ungespeichert)';
       // ---------------------------------------------------------------------
@@ -268,6 +272,50 @@
                   + (avg != null ? ` (Ø: ${avg > 0 ? '+' : ''}${avg.toFixed(2)}%)` : '')
                 : '',
               titleText: `Moving Average Deviation (${ctx.maWindow} Tage)`,
+            };
+          },
+        },
+        {
+          key: 'macd', enabledKey: 'useMacd', title: 'MACD (12/26/9)',
+          chartId: 'macd-chart', currentId: 'macd-chart-current',
+          defaults: { useMacd: false, macdBuy: 0, macdSell: 0 },
+          settings: {
+            toggleLabel: 'MACD berücksichtigen',
+            hint: 'Histogramm = MACD-Linie minus Signallinie. Standard: kaufen ≥ 0, verkaufen ≤ 0 (Linie kreuzt Signallinie).',
+            rows: [{ fields: [
+              { key: 'macdBuy', before: 'kaufen ≥ ', step: 0.01 },
+              { key: 'macdSell', before: 'verkaufen ≤ ', step: 0.01 },
+            ] }],
+          },
+          ready: () => true,
+          build: (ctx, s) => {
+            const macd = ctx.macd || [];
+            const signal = ctx.macdSignal || [];
+            const histogram = macd.map((v, i) => (v != null && signal[i] != null) ? v - signal[i] : null);
+            // renderIndicatorChart skaliert Y nur nach `series` (=Histogramm). Die
+            // Overlay-Linien (MACD/Signal) sind meist deutlich größer als ihre
+            // Differenz -> Skala muss alle drei Reihen berücksichtigen, sonst ragen
+            // die Linien aus dem SVG.
+            const allValues = [...histogram, ...macd, ...signal].filter(v => v != null);
+            const domainMin = allValues.length ? Math.min(...allValues) : undefined;
+            const domainMax = allValues.length ? Math.max(...allValues) : undefined;
+            const lastMacd = lastValue(macd);
+            const lastSignal = lastValue(signal);
+            return {
+              series: histogram,
+              signals: histogram.map(v => (v == null ? null : sig(v >= s.macdBuy, v <= s.macdSell))),
+              chart: {
+                fixedMin: domainMin, fixedMax: domainMax, signedArea: true, color: '#888',
+                overlays: [
+                  { series: macd, color: '#2563eb', dashed: false },
+                  { series: signal, color: '#ea580c', dashed: false },
+                ],
+                formatValue: v => v.toFixed(2),
+                referenceLines: [{ value: 0, stroke: '#ddd', dashed: false }],
+              },
+              currentText: (lastMacd != null && lastSignal != null)
+                ? `MACD ${lastMacd.toFixed(2)} / Signal ${lastSignal.toFixed(2)}`
+                : '',
             };
           },
         },
@@ -450,21 +498,54 @@
         if (field.after) labelEl.appendChild(document.createTextNode(field.after));
       }
 
+      // Archivierte Indikatoren: rein eine Anzeige-Einstellung (blendet Chart +
+      // Einstellungen aus, ohne "berücksichtigen"/Schwellen anzufassen) — bewusst
+      // getrennt vom Ein/Aus-Schalter, damit Archivieren nie die Balken-Berechnung
+      // verändert. Nur lokal (pro Browser), nicht Teil der server-synchronisierten
+      // Presets/Watchlist.
+      function loadArchivedIndicators() {
+        return new Set(readStored(ARCHIVED_INDICATORS_KEY, []));
+      }
+
+      function setIndicatorArchived(key, archived) {
+        const archivedKeys = loadArchivedIndicators();
+        if (archived) archivedKeys.add(key); else archivedKeys.delete(key);
+        localStorage.setItem(ARCHIVED_INDICATORS_KEY, JSON.stringify([...archivedKeys]));
+        renderIndicatorSettings();
+        renderIndicatorChartSkeletons();
+        loadHighlightSettings();
+        if (lastChartData) rerenderHighlightCharts();
+      }
+
       // Einstellungs-Panel komplett aus der Registry erzeugen: je Indikator ein
       // Schalter, ein Hinweis und seine Zahlenfelder. Danach die Felder verdrahten.
+      // Archivierte Indikatoren werden stattdessen als knappe Zeile mit
+      // "einblenden"-Knopf ans Ende gesetzt.
       function renderIndicatorSettings() {
         const container = document.getElementById('indicator-settings');
         container.innerHTML = '';
-        INDICATORS.forEach(ind => {
+        const archivedKeys = loadArchivedIndicators();
+
+        INDICATORS.filter(ind => !archivedKeys.has(ind.key)).forEach(ind => {
           const cfg = ind.settings || {};
+          const toggleRow = document.createElement('div');
+          toggleRow.style.cssText = 'display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 3px;';
           const toggle = document.createElement('label');
-          toggle.style.cssText = 'display: block; margin-bottom: 3px;';
+          toggle.style.cssText = 'flex: 1; min-width: 0;';
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.dataset.toggle = ind.enabledKey;
           toggle.appendChild(cb);
           toggle.appendChild(document.createTextNode(' ' + (cfg.toggleLabel || ind.title)));
-          container.appendChild(toggle);
+          toggleRow.appendChild(toggle);
+          const archiveBtn = document.createElement('button');
+          archiveBtn.type = 'button';
+          archiveBtn.dataset.archive = ind.key;
+          archiveBtn.textContent = 'archivieren';
+          archiveBtn.title = 'Indikator ausblenden (Einstellungen bleiben erhalten)';
+          archiveBtn.style.cssText = 'background: none; border: none; color: #999; font-size: 10px; cursor: pointer; padding: 0; white-space: nowrap;';
+          toggleRow.appendChild(archiveBtn);
+          container.appendChild(toggleRow);
 
           if (cfg.hint) {
             const hint = document.createElement('div');
@@ -492,18 +573,48 @@
           });
         });
 
+        const archivedIndicators = INDICATORS.filter(ind => archivedKeys.has(ind.key));
+        if (archivedIndicators.length) {
+          const heading = document.createElement('div');
+          heading.style.cssText = 'margin-top: 10px; padding-top: 8px; border-top: 1px solid #eee; color: #666; font-size: 11px;';
+          heading.textContent = `Archivierte Indikatoren (${archivedIndicators.length})`;
+          container.appendChild(heading);
+          archivedIndicators.forEach(ind => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 4px; color: #999; font-size: 11px;';
+            const label = document.createElement('span');
+            label.textContent = ind.title;
+            row.appendChild(label);
+            const unarchiveBtn = document.createElement('button');
+            unarchiveBtn.type = 'button';
+            unarchiveBtn.dataset.unarchive = ind.key;
+            unarchiveBtn.textContent = 'einblenden';
+            unarchiveBtn.style.cssText = 'background: none; border: none; color: #2563eb; font-size: 10px; cursor: pointer; padding: 0; white-space: nowrap;';
+            row.appendChild(unarchiveBtn);
+            container.appendChild(row);
+          });
+        }
+
         container.querySelectorAll('[data-toggle]').forEach(cb => {
           cb.addEventListener('change', event => updateHighlightSetting(cb.dataset.toggle, event.target.checked));
         });
         container.querySelectorAll('[data-setting]').forEach(inp => bindNumberSetting(inp, inp.dataset.setting));
+        container.querySelectorAll('[data-archive]').forEach(btn => {
+          btn.addEventListener('click', () => setIndicatorArchived(btn.dataset.archive, true));
+        });
+        container.querySelectorAll('[data-unarchive]').forEach(btn => {
+          btn.addEventListener('click', () => setIndicatorArchived(btn.dataset.unarchive, false));
+        });
       }
 
-      // Für jeden Indikator seinen Chart-Rahmen (Titel, Aktuell-Wert, leeres SVG) anlegen.
+      // Für jeden (nicht archivierten) Indikator seinen Chart-Rahmen (Titel,
+      // Aktuell-Wert, leeres SVG) anlegen.
       function renderIndicatorChartSkeletons() {
         const container = document.getElementById('indicator-charts');
         container.innerHTML = '';
         const ns = 'http://www.w3.org/2000/svg';
-        INDICATORS.forEach(ind => {
+        const archivedKeys = loadArchivedIndicators();
+        INDICATORS.filter(ind => !archivedKeys.has(ind.key)).forEach(ind => {
           const header = document.createElement('div');
           header.style.cssText = 'max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;';
           const title = document.createElement('span');
@@ -901,6 +1012,7 @@
           timestamps: data.timestamps, closes: data.closes, rsi: data.rsi,
           priceVsMaPct: data.priceVsMaPct, priceVsMaPctStd: data.priceVsMaPctStd,
           priceVsMaPctAvg: data.priceVsMaPctAvg, maWindow: data.maWindow,
+          macd: data.macd, macdSignal: data.macdSignal,
         };
         const built = buildIndicators(ctx, highlightSettings);
         const rawRanges = computeHighlightRanges(built, data.timestamps, highlightSettings);
@@ -911,10 +1023,13 @@
 
         renderChart(data.closes, data.timestamps, currentRange, data.movingAverage, sharedChartPadLeft, highlightRanges);
 
-        // Jeden Indikator-Chart aus seinem build()-Ergebnis zeichnen.
+        // Jeden Indikator-Chart aus seinem build()-Ergebnis zeichnen. Archivierte
+        // Indikatoren haben kein Chart-Grundgerüst (siehe renderIndicatorChartSkeletons)
+        // -> hier überspringen, sie fließen aber weiter in `built`/die Balken ein.
+        const archivedKeys = loadArchivedIndicators();
         INDICATORS.forEach(ind => {
           const b = built[ind.key];
-          if (!b) return;
+          if (!b || archivedKeys.has(ind.key)) return;
           renderIndicatorChart(ind.chartId, b.series, data.timestamps, currentRange,
             { ...b.chart, padLeft: sharedChartPadLeft, highlightRanges });
           if (ind.titleId && b.titleText != null) {
@@ -1157,20 +1272,6 @@
           // Stelle, damit ein Neu-Rendern nach Einstellungsänderung identisch aussieht.
           rerenderHighlightCharts();
 
-          const lastRsi = lastValue(data.rsi);
-          document.getElementById('rsi-chart-current').textContent =
-            lastRsi != null ? lastRsi.toFixed(1) : '';
-
-          const lastPma = lastValue(data.priceVsMaPct);
-          const avgPma = data.priceVsMaPctAvg;
-          if (lastPma != null) {
-            const current = `${lastPma > 0 ? '+' : ''}${lastPma.toFixed(2)}%`;
-            const avgText = avgPma != null ? ` (Ø: ${avgPma > 0 ? '+' : ''}${avgPma.toFixed(2)}%)` : '';
-            document.getElementById('price-ma-chart-current').textContent = current + avgText;
-          } else {
-            document.getElementById('price-ma-chart-current').textContent = '';
-          }
-
           const closes = data.closes;
           const changeEl = document.getElementById('range-change');
           if (closes && closes.length >= 2) {
@@ -1196,8 +1297,8 @@
           if (data.error) throw new Error(data.error);
 
           const fg = data.fearGreed;
-          document.getElementById('feargreed-current').textContent =
-            `${fg.score.toFixed(1)} (${fg.rating})`;
+          const feargreedCurrentEl = document.getElementById('feargreed-current');
+          if (feargreedCurrentEl) feargreedCurrentEl.textContent = `${fg.score.toFixed(1)} (${fg.rating})`;
 
           fearGreedHistory = fg.history || [];
           smartDumbHistory = (data.smartDumbMoney || {}).history || [];
@@ -1342,6 +1443,7 @@
           link.style.overflow = 'hidden';
           link.style.textOverflow = 'ellipsis';
           link.style.whiteSpace = 'nowrap';
+          link.style.minWidth = '0';
           link.addEventListener('click', (e) => {
             e.preventDefault();
             selectSymbol(fav.symbol);

@@ -259,6 +259,41 @@ def compute_moving_average(closes, window):
     return result
 
 
+def compute_ema_series(closes, period):
+    result = [None] * len(closes)
+    if len(closes) < period:
+        return result
+    multiplier = 2 / (period + 1)
+    ema = sum(closes[:period]) / period
+    result[period - 1] = ema
+    for i in range(period, len(closes)):
+        ema = (closes[i] - ema) * multiplier + ema
+        result[i] = ema
+    return result
+
+
+def compute_macd_series(closes, fast=12, slow=26, signal=9):
+    """MACD-Linie (EMA(fast) - EMA(slow)) und ihre Signal-Linie (EMA(signal) der
+    MACD-Linie). Die MACD-Linie hat vorne (slow - 1) None-Eintraege (Warmup der
+    langsamen EMA) -> die Signal-EMA nur auf dem dichten Teil ab dem ersten
+    validen MACD-Wert berechnen, sonst waere ihr SMA-Startwert falsch."""
+    ema_fast = compute_ema_series(closes, fast)
+    ema_slow = compute_ema_series(closes, slow)
+    macd_line = [
+        (f - s) if (f is not None and s is not None) else None
+        for f, s in zip(ema_fast, ema_slow)
+    ]
+
+    first_valid = next((i for i, v in enumerate(macd_line) if v is not None), None)
+    signal_line = [None] * len(closes)
+    if first_valid is not None:
+        dense_signal = compute_ema_series(macd_line[first_valid:], signal)
+        for offset, v in enumerate(dense_signal):
+            signal_line[first_valid + offset] = v
+
+    return macd_line, signal_line
+
+
 def get_daily_moving_average_by_date(symbol, window=MA_WINDOW_DEFAULT):
     period2 = int(time.time())
     period1 = period2 - MA_DAILY_LOOKBACK_DAYS * 86400
@@ -339,6 +374,7 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
     )
 
     rsi_series = compute_rsi_series(all_closes, 14)
+    macd_line, macd_signal_line = compute_macd_series(all_closes)
     price_vs_ma_pct = [
         (100 - (ma / close * 100)) if ma is not None else None
         for close, ma in zip(all_closes, moving_average)
@@ -372,6 +408,8 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
         "movingAverage": moving_average[start_index:],
         "maWindow": ma_window,
         "rsi": rsi_series[start_index:],
+        "macd": macd_line[start_index:],
+        "macdSignal": macd_signal_line[start_index:],
         "priceVsMaPct": price_vs_ma_pct_display,
         "priceVsMaPctAvg": price_vs_ma_pct_avg,
         "priceVsMaPctStd": price_vs_ma_pct_std,
@@ -587,6 +625,17 @@ def _pma_signals(ctx, s):
     return out
 
 
+def _macd_signals(ctx, s):
+    """Histogramm (MACD-Linie minus Signallinie) gegen die Schwellenwerte - Standard
+    0/0 entspricht dem klassischen bullish/bearish MACD-Kreuzsignal."""
+    macd, signal = ctx["macd"], ctx["macdSignal"]
+    histogram = [
+        (m - sg) if (m is not None and sg is not None) else None
+        for m, sg in zip(macd, signal)
+    ]
+    return _threshold_signals(histogram, lambda v: v >= s["macdBuy"], lambda v: v <= s["macdSell"])
+
+
 INDICATORS = [
     {"key": "feargreed", "enabled_key": "useFearGreed", "signals": _feargreed_signals,
      "defaults": {"useFearGreed": True, "fearGreedBuy": 25, "fearGreedSell": 75}},
@@ -596,6 +645,8 @@ INDICATORS = [
      "defaults": {"useRsi": True, "rsiBuy": 30, "rsiSell": 70}},
     {"key": "pma", "enabled_key": "usePma", "signals": _pma_signals,
      "defaults": {"usePma": True, "pmaStdMultiplier": 1, "maDeviationWindow": MA_DEVIATION_WINDOW_DEFAULT}},
+    {"key": "macd", "enabled_key": "useMacd", "signals": _macd_signals,
+     "defaults": {"useMacd": False, "macdBuy": 0, "macdSell": 0}},
 ]
 
 # Aus der Registry abgeleitet — nicht von Hand pflegen. Muss zu index.html passen.
@@ -728,6 +779,8 @@ def _indicator_context(data, timestamps, fg_times, fg_scores, sd_times, sd_sprea
     (pro Kerze) — Fear & Greed / Smart-Dumb vorwärts-aufgefüllt, RSI/Abweichung direkt."""
     rsi_all = data.get("rsi") or []
     price_vs_ma = data.get("priceVsMaPct") or []
+    macd_all = data.get("macd") or []
+    macd_signal_all = data.get("macdSignal") or []
     count = len(timestamps)
     return {
         "fg": [forward_filled(fg_times, fg_scores, t) for t in timestamps],
@@ -736,6 +789,8 @@ def _indicator_context(data, timestamps, fg_times, fg_scores, sd_times, sd_sprea
         "pma": [price_vs_ma[i] if i < len(price_vs_ma) else None for i in range(count)],
         "trend": cumulative_trend(price_vs_ma),
         "std": data.get("priceVsMaPctStd"),
+        "macd": [macd_all[i] if i < len(macd_all) else None for i in range(count)],
+        "macdSignal": [macd_signal_all[i] if i < len(macd_signal_all) else None for i in range(count)],
     }
 
 
