@@ -94,7 +94,13 @@
       "Bash(python3 -c ' *)",
       "Bash(time curl -s \"http://localhost:8000/api/history?symbol=SXR8.DE&range=10y\" -o /dev/null -w \"10y refetch status: %{http_code}, time: %{time_total}s\\\\n\")",
       "Bash(tasklist //FI \"IMAGENAME eq python.exe\" //FO CSV)",
-      "Bash(taskkill //PID 8544 //F)"
+      "Bash(taskkill //PID 8544 //F)",
+      "Bash(node --check \"C:\\\\Users\\\\anton\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-anton-programmierung-Aktienanalyse\\\\12e4b153-72c2-4ba8-b6b2-2d4ab44a11c4\\\\scratchpad\\\\extracted.js\")",
+      "Bash(echo \"syntax check exit: $?\")",
+      "Bash(grep -Hm1 ^description: 'c:\\\\Users\\\\anton\\\\programmierung\\\\Aktienanalyse/.claude/skills/*/SKILL.md')",
+      "Bash(node -e \"require.resolve\\('playwright'\\)\")",
+      "Read(//c/Users/anton/.cache/**)",
+      "Bash(taskkill //PID 7972 //F)"
     ]
   }
 }

@@ -1665,6 +1665,9 @@
         // Favoriten per Drag & Drop am Griff umsortieren (die ↑/↓-Buttons bleiben zusätzlich).
         makeSortable(list, '.favorite-item', 'index', '.drag-handle',
           (fromIndex, toIndex, placeBefore) => reorderFavorites(+fromIndex, +toIndex, placeBefore));
+        // Anzahl/Stummschaltung der Favoriten kann sich geändert haben -> Überwachungstext
+        // (favoritesSuffix in updateWatchUi) neu berechnen.
+        updateWatchUi();
       }
 
       // Favorit von fromIndex vor/hinter toIndex einsortieren und persistieren.
@@ -1815,8 +1818,19 @@
           ? 'Überwacht: ' + active
               .map(f => `${f.name} (${f.ranges.map(r => RANGE_LABELS[r]).join(', ')}`
                 + `${f.minDelayDays ? `, ab ${f.minDelayDays} Tag${f.minDelayDays === 1 ? '' : 'en'}` : ''})`)
-              .join('; ') + ' — für alle Favoriten'
+              .join('; ') + favoritesSuffix()
           : 'Kein Filter überwacht (☆ markiert die Variante und wählt ein Zeitfenster).';
+      }
+
+      // Wie viele Favoriten die Überwachung tatsächlich erreicht — einzelne können per
+      // 🔔/🔕 (toggleFavoriteNotify) stummgeschaltet sein, der Server prüft dann nur den Rest.
+      function favoritesSuffix() {
+        const favs = loadFavorites();
+        const notified = favs.filter(f => f.notify !== false).length;
+        if (favs.length === 0) return ' — aktuell keine Favoriten';
+        if (notified === favs.length) return ' — für alle Favoriten';
+        if (notified === 0) return ' — für keinen Favoriten (alle stummgeschaltet)';
+        return ` — für ${notified} von ${favs.length} Favoriten`;
       }
 
       // Stern: schaltet die Überwachung ganz an oder aus. Beim Einschalten wird das
