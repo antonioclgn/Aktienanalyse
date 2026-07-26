@@ -1151,6 +1151,9 @@ def run_alert_check(force=False):
     watchlist = read_json_file(WATCHLIST_FILE, {}) or {}
     favorites = watchlist.get("favorites") or []
     filters = watchlist.get("filters") or []
+    # Nur Favoriten mit eingeschalteter Benachrichtigung prüfen. Fehlt das Flag
+    # (Altbestand), gilt es als AN — so verliert niemand bestehende Meldungen.
+    favorites = [f for f in favorites if f.get("notify", True)]
     if not favorites or not filters:
         return []
     # Nachtruhe und Wochenende gelten für alle Werte gleich — dann gar nicht erst bei

@@ -1608,6 +1608,15 @@
           downBtn.style.marginLeft = '2px';
           downBtn.addEventListener('click', () => moveFavorite(index, 1));
 
+          // Fehlt das Flag (Altbestand), gilt Benachrichtigung als AN.
+          const notifyOn = fav.notify !== false;
+          const notifyBtn = document.createElement('button');
+          notifyBtn.type = 'button';
+          notifyBtn.textContent = notifyOn ? '🔔' : '🔕';
+          notifyBtn.title = notifyOn ? 'Benachrichtigungen an (klicken zum Ausschalten)' : 'Benachrichtigungen aus (klicken zum Einschalten)';
+          notifyBtn.style.marginLeft = '2px';
+          notifyBtn.addEventListener('click', () => toggleFavoriteNotify(fav.symbol));
+
           const removeBtn = document.createElement('button');
           removeBtn.type = 'button';
           removeBtn.textContent = '×';
@@ -1622,6 +1631,7 @@
 
           actions.appendChild(upBtn);
           actions.appendChild(downBtn);
+          actions.appendChild(notifyBtn);
           actions.appendChild(removeBtn);
 
           li.appendChild(handle);
@@ -1650,6 +1660,18 @@
         pushConfig();
       }
 
+      // Benachrichtigungen für ein Asset an-/ausschalten. Das Flag wird explizit
+      // gesetzt; der Server prüft nur Favoriten mit notify != false.
+      function toggleFavoriteNotify(symbol) {
+        const favs = loadFavorites();
+        const fav = favs.find(f => f.symbol === symbol);
+        if (!fav) return;
+        fav.notify = fav.notify === false ? true : false;
+        saveFavorites(favs);
+        renderFavorites();
+        pushConfig();
+      }
+
       document.getElementById('favorite-star').addEventListener('click', () => {
         const favs = loadFavorites();
         const isFavorite = favs.some(f => f.symbol === currentSymbol);
@@ -1658,7 +1680,8 @@
         } else {
           const name = document.getElementById('selected-instrument').textContent
             .replace(` (${currentSymbol})`, '');
-          favs.push({ symbol: currentSymbol, name });
+          // Neue Favoriten standardmäßig ohne Benachrichtigung (Opt-in über die Glocke).
+          favs.push({ symbol: currentSymbol, name, notify: false });
           saveFavorites(favs);
         }
         renderFavorites();
