@@ -107,7 +107,12 @@
       "Bash(awk '{print $5}')",
       "Bash(taskkill //PID 12420 //F)",
       "Bash(cat)",
-      "Bash(node /c/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/12e4b153-72c2-4ba8-b6b2-2d4ab44a11c4/scratchpad/test_sdchange.js)"
+      "Bash(node /c/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/12e4b153-72c2-4ba8-b6b2-2d4ab44a11c4/scratchpad/test_sdchange.js)",
+      "Bash(node --check \"C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/e1ea5338-4aea-4124-9f48-8bcf58437e8c/scratchpad/app.js\")",
+      "Bash(python -c \"import ast,sys; ast.parse\\(open\\('server.py',encoding='utf-8'\\).read\\(\\)\\); print\\('server.py OK'\\)\")",
+      "Bash(AKTIENANALYSE_PORT=8765 python server.py)",
+      "Bash('/c/Program Files/Google/Chrome/Application/chrome.exe' --headless --disable-gpu --no-sandbox --user-data-dir=C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/e1ea5338-4aea-4124-9f48-8bcf58437e8c/scratchpad/profile --virtual-time-budget=8000 --dump-dom http://127.0.0.1:8765/)",
+      "Bash(taskkill //FI \"WINDOWTITLE eq *\" //F //IM python.exe)"
     ]
   }
 }

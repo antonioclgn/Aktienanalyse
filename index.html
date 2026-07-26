@@ -19,12 +19,19 @@
      sonst sieht die Seite am Handy „aufgebläht" aus. */
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; height: 100%; overflow-y: hidden; }
   body { margin: 0; height: 100vh; overflow-y: hidden; display: flex; flex-direction: column; }
-  /* Drag & Drop: Reihenfolge von Indikatoren (Balken-Einstellungen) und Favoriten. */
+  /* Drag & Drop: Reihenfolge von Indikatoren (Balken-Einstellungen), Favoriten und Filtern. */
   .drag-handle { cursor: grab; color: #bbb; user-select: none; flex-shrink: 0; }
   .drag-handle:active { cursor: grabbing; }
   .dragging { opacity: 0.4; }
   .drag-over-top { border-top: 2px solid #2563eb; }
   .drag-over-bottom { border-bottom: 2px solid #2563eb; }
+  /* Abgewaehlter Indikator: nur optisch zurueckgenommen. Die Felder bleiben bedienbar,
+     damit man Schwellen einstellen kann, ohne den Indikator anschalten zu muessen. */
+  .indicator-card.is-off .indicator-title { color: #999; }
+  .indicator-card.is-off .indicator-body { opacity: 0.45; }
+  /* Zeilen im Filter-Menue (preset-menu). */
+  .preset-row:hover { background: #f2f2f2; }
+  .preset-row.active { background: #eef4ff; }
 </style>
 </head>
 <body>
@@ -82,11 +89,24 @@
       <section class="bar-settings" style="padding-bottom: 24px; min-height: 25vh; font-size: 13px;">
         <h2 style="font-size: 14px; margin: 0 0 8px;">Balken-Einstellungen</h2>
         <div style="color: #666; margin-bottom: 6px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen. Gilt für alle Werte.</div>
-        <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
-          <select id="preset-select" style="flex: 1; min-width: 0;"></select>
+        <!-- Eigenes Dropdown statt <select>: <option> kann keinen Stern, keine Knöpfe und
+             keinen Ziehgriff tragen. Die Zeilen erzeugt renderPresetPicker. Das Menü hängt
+             bewusst an der ganzen Leiste (nicht nur am Knopf): die Spalte ist schmal und
+             schneidet Überstehendes ab (overflow-x: hidden). -->
+        <div id="preset-bar" style="position: relative; display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
+          <button id="preset-toggle" type="button" title="Filter wählen, überwachen, löschen und sortieren"
+                  style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; text-align: left; cursor: pointer;">
+            <span id="preset-current" style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
+            <span style="flex-shrink: 0;">▾</span>
+          </button>
           <button id="watch-preset" type="button" title="Diesen Filter überwachen (Favorit)" style="background: none; border: none; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px;">☆</button>
           <button id="save-preset" type="button" title="Aktuelle Werte als Variante speichern">Speichern</button>
-          <button id="delete-preset" type="button" title="Gewählte Variante löschen">×</button>
+          <div id="preset-menu" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #ccc; box-shadow: 0 2px 6px rgba(0,0,0,0.15); z-index: 10; max-height: 45vh; overflow-y: auto;">
+            <!-- "Standard" steht fest oben (nicht sortierbar, nicht löschbar), darunter
+                 die gespeicherten Filter in eigener Reihenfolge. -->
+            <div id="preset-default-row"></div>
+            <div id="preset-rows"></div>
+          </div>
         </div>
         <div id="watch-ranges" style="color: #666; font-size: 11px; margin-bottom: 4px;">
           <div style="margin-bottom: 2px;">Überwachen in diesen Zeitfenstern:</div>
@@ -148,6 +168,7 @@
       const HIGHLIGHT_SETTINGS_KEY = 'aktienanalyse-highlight-settings'; // alt: je Symbol
       const ACTIVE_SETTINGS_KEY = 'aktienanalyse-highlight-active';
       const PRESETS_KEY = 'aktienanalyse-highlight-presets';
+      const PRESET_ORDER_KEY = 'aktienanalyse-preset-order';
       const ARCHIVED_INDICATORS_KEY = 'aktienanalyse-archived-indicators';
       const INDICATOR_ORDER_KEY = 'aktienanalyse-indicator-order';
       const DEFAULT_PRESET_NAME = 'Standard';
@@ -446,20 +467,173 @@
           .find(name => sameSettings(highlightSettings, highlightPresets[name])) || null;
       }
 
-      function renderPresetOptions() {
-        const select = document.getElementById('preset-select');
-        const active = matchingPresetName();
-        select.innerHTML = '';
-        const names = [DEFAULT_PRESET_NAME, ...Object.keys(highlightPresets).sort()];
-        if (!active) names.push(CUSTOM_PRESET_LABEL);
-        names.forEach(name => {
-          const option = document.createElement('option');
-          option.value = name;
-          option.textContent = name;
-          select.appendChild(option);
+      // Gewählter Filter: rein aus den Werten abgeleitet (kein DOM-Zustand). Genau so
+      // wurde vorher auch das <select> vorbelegt.
+      function selectedPresetName() {
+        return matchingPresetName() || CUSTOM_PRESET_LABEL;
+      }
+
+      // Vom Nutzer gewählte Reihenfolge der gespeicherten Filter (nur Anzeige im Menü).
+      // Wird über /api/config server-übergreifend synchronisiert.
+      function loadPresetOrder() {
+        const order = readStored(PRESET_ORDER_KEY, []);
+        return Array.isArray(order) ? order : [];
+      }
+
+      function savePresetOrder(names) {
+        localStorage.setItem(PRESET_ORDER_KEY, JSON.stringify(names));
+        pushConfig();
+      }
+
+      // Namen in gespeicherter Reihenfolge. Filter ohne Eintrag darin — neu angelegt
+      // oder von einem anderen Gerät — hängen alphabetisch hinten an (wie früher die
+      // ganze Liste). So ist die Anzeige robust, egal was gespeichert ist.
+      function orderedPresetNames() {
+        const order = loadPresetOrder();
+        const rank = new Map(order.map((name, i) => [name, i]));
+        return Object.keys(highlightPresets).sort((a, b) => {
+          const ra = rank.has(a) ? rank.get(a) : order.length;
+          const rb = rank.has(b) ? rank.get(b) : order.length;
+          return ra - rb || a.localeCompare(b);
         });
-        select.value = active || CUSTOM_PRESET_LABEL;
-        document.getElementById('delete-preset').disabled = !(active && highlightPresets[active]);
+      }
+
+      // Einen Filter per Drag & Drop verschieben: draggedName relativ zu targetName
+      // (davor/danach) einsortieren.
+      function applyPresetReorder(draggedName, targetName, placeBefore) {
+        if (draggedName === targetName) return;
+        const names = orderedPresetNames();
+        const from = names.indexOf(draggedName);
+        if (from === -1) return;
+        names.splice(from, 1);
+        let target = names.indexOf(targetName);
+        if (target === -1) return;
+        if (!placeBefore) target += 1;
+        names.splice(target, 0, draggedName);
+        savePresetOrder(names);
+        renderPresetPicker();
+      }
+
+      // ↑/↓: Tausch mit dem Nachbarn — am Handy gibt es kein Drag & Drop.
+      function movePreset(name, direction) {
+        const names = orderedPresetNames();
+        const index = names.indexOf(name);
+        const target = index + direction;
+        if (index === -1 || target < 0 || target >= names.length) return;
+        [names[index], names[target]] = [names[target], names[index]];
+        savePresetOrder(names);
+        renderPresetPicker();
+      }
+
+      function setPresetMenuOpen(open) {
+        document.getElementById('preset-menu').style.display = open ? 'block' : 'none';
+      }
+
+      function selectPreset(name) {
+        const settings = filterSettingsByName(name);
+        if (!settings) return;
+        setPresetMenuOpen(false);
+        applyHighlightSettings(settings);
+      }
+
+      // Eine Zeile im Filter-Menü: Ziehgriff, Stern (Überwachung = Benachrichtigungen),
+      // Name (wählt den Filter), ↑/↓ und Löschen. "Standard" ist fest: kein Verschieben,
+      // kein Löschen — der Griff bleibt als unsichtbarer Platzhalter, damit die Namen
+      // untereinander bündig stehen.
+      function createPresetRow(name, { fixed = false, index = 0, total = 0, watchedNames, selected }) {
+        const row = document.createElement('div');
+        row.className = 'preset-row' + (name === selected ? ' active' : '');
+        row.dataset.presetName = name;
+        row.style.cssText = 'display: flex; align-items: center; gap: 2px; padding: 3px 4px;'
+          + ' border-bottom: 1px solid #f0f0f0; cursor: pointer;';
+        row.addEventListener('click', () => selectPreset(name));
+
+        const handle = document.createElement('span');
+        handle.className = 'drag-handle';
+        handle.textContent = '⠿';
+        handle.style.marginRight = '2px';
+        if (fixed) {
+          handle.style.visibility = 'hidden';
+        } else {
+          handle.title = 'Zum Umsortieren ziehen';
+          handle.addEventListener('click', event => event.stopPropagation());
+        }
+        row.appendChild(handle);
+
+        const watched = watchedNames.has(name);
+        const star = document.createElement('button');
+        star.type = 'button';
+        star.textContent = watched ? '★' : '☆';
+        star.title = watched ? 'Überwachung beenden' : 'Diesen Filter überwachen (Favorit)';
+        star.style.cssText = 'background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; flex-shrink: 0;';
+        star.addEventListener('click', event => {
+          event.stopPropagation();
+          toggleWatchedFilter(name);
+        });
+        row.appendChild(star);
+
+        const label = document.createElement('span');
+        label.textContent = name;
+        label.title = name;
+        label.style.cssText = 'flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;'
+          + ' white-space: nowrap; font-size: 13px;' + (name === selected ? ' font-weight: bold;' : '');
+        row.appendChild(label);
+
+        if (fixed) return row;
+
+        const actions = document.createElement('span');
+        actions.style.cssText = 'display: flex; flex-shrink: 0; margin-left: 4px;';
+        [{ text: '↑', title: 'Nach oben', dir: -1, off: index === 0 },
+         { text: '↓', title: 'Nach unten', dir: 1, off: index === total - 1 }].forEach(spec => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = spec.text;
+          btn.title = spec.title;
+          btn.disabled = spec.off;
+          // Kompakt, damit in der schmalen Spalte möglichst viel Platz für den Namen bleibt.
+          btn.style.cssText = 'margin-left: 2px; font-size: 11px; padding: 0 4px;';
+          btn.addEventListener('click', event => {
+            event.stopPropagation();
+            movePreset(name, spec.dir);
+          });
+          actions.appendChild(btn);
+        });
+
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.textContent = '×';
+        removeBtn.title = 'Filter löschen';
+        removeBtn.style.cssText = 'margin-left: 2px; font-size: 11px; padding: 0 4px;';
+        removeBtn.addEventListener('click', event => {
+          event.stopPropagation();
+          deletePreset(name);
+        });
+        actions.appendChild(removeBtn);
+        row.appendChild(actions);
+        return row;
+      }
+
+      function renderPresetPicker() {
+        const selected = selectedPresetName();
+        const watchedNames = new Set(loadWatchedFilters().map(f => f.name));
+
+        const current = document.getElementById('preset-current');
+        current.textContent = (watchedNames.has(selected) ? '★ ' : '') + selected;
+        current.title = selected;
+
+        const defaultRow = document.getElementById('preset-default-row');
+        defaultRow.innerHTML = '';
+        defaultRow.appendChild(createPresetRow(DEFAULT_PRESET_NAME, { fixed: true, watchedNames, selected }));
+
+        const rows = document.getElementById('preset-rows');
+        rows.innerHTML = '';
+        const names = orderedPresetNames();
+        names.forEach((name, index) => {
+          rows.appendChild(createPresetRow(name, { index, total: names.length, watchedNames, selected }));
+        });
+        // Nur die gespeicherten Filter sind sortierbar — "Standard" liegt bewusst in
+        // einem eigenen Container, sonst wäre seine Zeile ohne Griff komplett ziehbar.
+        makeSortable(rows, '.preset-row', 'presetName', '.drag-handle', applyPresetReorder);
         updateWatchUi();
       }
 
@@ -483,23 +657,33 @@
         const suggestion = matchingPresetName() === DEFAULT_PRESET_NAME ? '' : (matchingPresetName() || '');
         const name = (prompt('Name der Variante:', suggestion) || '').trim();
         if (!name || name === DEFAULT_PRESET_NAME || name === CUSTOM_PRESET_LABEL) return;
+        const isNew = !highlightPresets[name];
         highlightPresets[name] = { ...highlightSettings };
         localStorage.setItem(PRESETS_KEY, JSON.stringify(highlightPresets));
-        renderPresetOptions();
+        // Neue Filter hängen hinten an; beim Überschreiben bleibt die Position.
+        if (isNew) localStorage.setItem(PRESET_ORDER_KEY, JSON.stringify([...loadPresetOrder(), name]));
+        renderPresetPicker();
         // Wird eine überwachte Variante überschrieben, muss der Server die neuen
         // Schwellenwerte kennen.
         pushConfig();
       }
 
-      function deleteSelectedPreset() {
-        const name = document.getElementById('preset-select').value;
+      // Löschen steckt jetzt in jeder Zeile des Menüs — deshalb die Rückfrage: ein
+      // Fehlklick kostet sonst den Filter und (siehe unten) seine Überwachung.
+      function deletePreset(name) {
         if (!highlightPresets[name]) return;
+        const question = `Filter „${name}" löschen?`
+          + (loadWatchedFilters().some(f => f.name === name)
+            ? '\nDie Überwachung dieses Filters endet damit ebenfalls.' : '');
+        if (!confirm(question)) return;
         delete highlightPresets[name];
         localStorage.setItem(PRESETS_KEY, JSON.stringify(highlightPresets));
         // Die gelöschte Variante darf nicht als verwaiste Überwachung zurückbleiben.
         localStorage.setItem(WATCHED_FILTERS_KEY,
           JSON.stringify(loadWatchedFilters().filter(f => f.name !== name)));
-        renderPresetOptions();
+        localStorage.setItem(PRESET_ORDER_KEY,
+          JSON.stringify(loadPresetOrder().filter(entry => entry !== name)));
+        renderPresetPicker();
         pushConfig();
       }
 
@@ -511,8 +695,11 @@
         };
 
         // Generisch aus der Registry: alle Schalter und Zahlenfelder aus den Einstellungen füllen.
+        // Abgewählte Indikatoren werden dabei ausgegraut (.is-off) — das ist die einzige
+        // Stelle dafür, weil hier jede Änderung am Aktiv-Schalter vorbeikommt.
         document.querySelectorAll('#indicator-settings [data-toggle]').forEach(cb => {
           cb.checked = !!highlightSettings[cb.dataset.toggle];
+          cb.closest('.indicator-card').classList.toggle('is-off', !cb.checked);
         });
         // Fehlender Richtungs-Schalter (alter Filter) gilt als AN — wie in combinedSignalAt.
         document.querySelectorAll('#indicator-settings [data-direction]').forEach(cb => {
@@ -521,7 +708,7 @@
         document.querySelectorAll('#indicator-settings [data-setting]').forEach(inp => {
           inp.value = highlightSettings[inp.dataset.setting];
         });
-        renderPresetOptions();
+        renderPresetPicker();
       }
 
       // Wird bei jeder Änderung aufgerufen, auch während des Ziehens eines Reglers
@@ -540,7 +727,7 @@
       function updateHighlightSettings(patch) {
         Object.assign(highlightSettings, patch);
         saveHighlightSettings();
-        renderPresetOptions();
+        renderPresetPicker();
         const needsReload = Object.keys(patch).some(key => SERVER_SIDE_SETTINGS.has(key));
         if (lastChartData && !needsReload) {
           rerenderHighlightCharts();
@@ -767,6 +954,7 @@
           handle.title = 'Zum Umsortieren ziehen';
           toggleRow.appendChild(handle);
           const toggle = document.createElement('label');
+          toggle.className = 'indicator-title';
           toggle.style.cssText = 'flex: 1; min-width: 0;';
           const cb = document.createElement('input');
           cb.type = 'checkbox';
@@ -783,11 +971,18 @@
           toggleRow.appendChild(archiveBtn);
           card.appendChild(toggleRow);
 
+          // Alles unterhalb der Kopfzeile wird bei abgewähltem Indikator ausgegraut
+          // (.is-off .indicator-body, gesetzt in loadHighlightSettings). Griff, Häkchen
+          // und "archivieren" bleiben bewusst außerhalb — sie müssen immer erkennbar sein.
+          const body = document.createElement('div');
+          body.className = 'indicator-body';
+          card.appendChild(body);
+
           if (cfg.hint) {
             const hint = document.createElement('div');
             hint.style.cssText = 'color: #666; margin: 0 0 3px 22px; font-size: 11px;';
             hint.textContent = cfg.hint;
-            card.appendChild(hint);
+            body.appendChild(hint);
           }
 
           // Richtung: manche Indikatoren taugen nur für eine Seite (z.B. RSI und die
@@ -806,14 +1001,14 @@
             label.appendChild(document.createTextNode(' ' + dir.label));
             dirRow.appendChild(label);
           });
-          card.appendChild(dirRow);
+          body.appendChild(dirRow);
 
           (cfg.rows || []).forEach(row => {
             if (row.block) {
               const label = document.createElement('label');
               label.style.cssText = 'display: block; margin: 0 0 7px 22px;';
               appendSettingField(label, row.field);
-              card.appendChild(label);
+              body.appendChild(label);
             } else {
               const line = document.createElement('div');
               line.style.cssText = 'display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 0 0 7px 22px;';
@@ -822,7 +1017,7 @@
                 appendSettingField(label, field);
                 line.appendChild(label);
               });
-              card.appendChild(line);
+              body.appendChild(line);
             }
           });
           container.appendChild(card);
@@ -1691,16 +1886,21 @@
       renderIndicatorSettings();
       renderIndicatorChartSkeletons();
 
-      document.getElementById('preset-select').addEventListener('change', (event) => {
-        const name = event.target.value;
-        if (name === CUSTOM_PRESET_LABEL) return;
-        applyHighlightSettings(
-          name === DEFAULT_PRESET_NAME ? DEFAULT_HIGHLIGHT_SETTINGS : highlightPresets[name]
-        );
+      // Filter-Menü auf/zu.
+      document.getElementById('preset-toggle').addEventListener('click', () => {
+        setPresetMenuOpen(document.getElementById('preset-menu').style.display === 'none');
+      });
+      // Klick außerhalb schließt — bewusst in der Capture-Phase: Stern, ↑/↓ und ×
+      // zeichnen das Menü neu, ihr Klickziel hängt beim Hochblubbern also nicht mehr
+      // im Dokument und contains() wäre false (das Menü würde ungewollt zuklappen).
+      document.addEventListener('click', (event) => {
+        if (!document.getElementById('preset-bar').contains(event.target)) setPresetMenuOpen(false);
+      }, true);
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') setPresetMenuOpen(false);
       });
 
       document.getElementById('save-preset').addEventListener('click', saveCurrentAsPreset);
-      document.getElementById('delete-preset').addEventListener('click', deleteSelectedPreset);
 
       const FAVORITES_KEY = 'aktienanalyse-favorites';
 
@@ -1941,17 +2141,18 @@
 
       function saveWatchedFilters(entries) {
         localStorage.setItem(WATCHED_FILTERS_KEY, JSON.stringify(entries));
-        updateWatchUi();
+        // Neu zeichnen statt nur updateWatchUi: die Sterne im Filter-Menü und die
+        // Beschriftung des Menü-Knopfes hängen ebenfalls an der Überwachung.
+        renderPresetPicker();
         pushConfig();
         // Stern, Zeitfenster oder Verzögerung können die Balken des gerade sichtbaren
         // Charts betreffen (siehe currentWatchDelayDays) — sofort neu zeichnen.
         if (lastChartData) rerenderHighlightCharts();
       }
 
-      // Verzögerung des aktuell in preset-select gewählten Filters, 0 wenn nicht überwacht.
+      // Verzögerung des aktuell gewählten Filters, 0 wenn nicht überwacht.
       function currentWatchDelayDays() {
-        const name = document.getElementById('preset-select').value;
-        const entry = loadWatchedFilters().find(f => f.name === name);
+        const entry = loadWatchedFilters().find(f => f.name === selectedPresetName());
         return entry ? entry.minDelayDays : 0;
       }
 
@@ -1968,7 +2169,7 @@
       }
 
       function updateWatchUi() {
-        const selected = document.getElementById('preset-select').value;
+        const selected = selectedPresetName();
         const star = document.getElementById('watch-preset');
         const watched = loadWatchedFilters();
         const entry = watched.find(f => f.name === selected);
@@ -2055,7 +2256,7 @@
       }
 
       function setWatchSymbols(symbols) {
-        const name = document.getElementById('preset-select').value;
+        const name = selectedPresetName();
         if (name === CUSTOM_PRESET_LABEL || !filterSettingsByName(name)) return;
         const watched = loadWatchedFilters();
         if (!watched.some(f => f.name === name)) return; // Filter muss erst überwacht werden (☆)
@@ -2075,8 +2276,9 @@
 
       // Stern: schaltet die Überwachung ganz an oder aus. Beim Einschalten wird das
       // gerade angezeigte Zeitfenster vorbelegt, damit sofort etwas überwacht wird.
-      function toggleWatchedFilter() {
-        const name = document.getElementById('preset-select').value;
+      // Ohne Namen gilt der ausgewählte Filter (Knopf neben dem Menü); die Sterne in
+      // den Menüzeilen geben ihren eigenen Filter mit.
+      function toggleWatchedFilter(name = selectedPresetName()) {
         if (name === CUSTOM_PRESET_LABEL || !filterSettingsByName(name)) return;
         const watched = loadWatchedFilters();
         if (watched.some(f => f.name === name)) {
@@ -2091,7 +2293,7 @@
       // Einzelnes Zeitfenster für den gewählten Filter an-/abwählen. Wird das letzte
       // Fenster abgewählt, endet die Überwachung dieses Filters ganz.
       function toggleWatchRange(range, on) {
-        const name = document.getElementById('preset-select').value;
+        const name = selectedPresetName();
         if (name === CUSTOM_PRESET_LABEL || !filterSettingsByName(name) || !RANGE_LABELS[range]) return;
         const watched = loadWatchedFilters();
         const entry = watched.find(f => f.name === name);
@@ -2115,7 +2317,7 @@
       // Mindestdauer für den gewählten Filter setzen: erst nach so vielen Handelstagen
       // ununterbrochenen Ausschlags kommt die erste Meldung (0 = sofort).
       function setWatchDelay(days) {
-        const name = document.getElementById('preset-select').value;
+        const name = selectedPresetName();
         if (name === CUSTOM_PRESET_LABEL || !filterSettingsByName(name)) return;
         const watched = loadWatchedFilters();
         if (!watched.some(f => f.name === name)) return; // Filter muss erst überwacht werden (☆)
@@ -2123,8 +2325,9 @@
       }
 
       // Geräteübergreifende Synchronisation (Variante A): Der Server ist die Quelle
-      // der Wahrheit für Favoriten, gespeicherte Varianten, überwachte Filter,
-      // Indikator-Reihenfolge, archivierte Indikatoren und die aktiven Einstellungen.
+      // der Wahrheit für Favoriten, gespeicherte Varianten samt ihrer Reihenfolge,
+      // überwachte Filter, Indikator-Reihenfolge, archivierte Indikatoren und die
+      // aktiven Einstellungen.
       // Bei jeder Änderung wird der gesamte Stand hochgeladen; daraus leitet der
       // Server auch die Watchlist für die Überwachung ab.
       async function pushConfig() {
@@ -2135,6 +2338,7 @@
             body: JSON.stringify({
               favorites: loadFavorites(),
               presets: readStored(PRESETS_KEY, {}),
+              presetOrder: loadPresetOrder(),
               watched: loadWatchedFilters(),
               indicatorOrder: loadIndicatorOrder(),
               archived: [...loadArchivedIndicators()],
@@ -2149,6 +2353,7 @@
       function configHasData(cfg) {
         return !!cfg && ((cfg.favorites && cfg.favorites.length)
           || (cfg.presets && Object.keys(cfg.presets).length)
+          || (cfg.presetOrder && cfg.presetOrder.length)
           || (cfg.watched && cfg.watched.length)
           || (cfg.indicatorOrder && cfg.indicatorOrder.length)
           || (cfg.archived && cfg.archived.length)
@@ -2164,6 +2369,7 @@
           if (configHasData(cfg)) {
             if (Array.isArray(cfg.favorites)) localStorage.setItem(FAVORITES_KEY, JSON.stringify(cfg.favorites));
             if (cfg.presets && typeof cfg.presets === 'object') localStorage.setItem(PRESETS_KEY, JSON.stringify(cfg.presets));
+            if (Array.isArray(cfg.presetOrder)) localStorage.setItem(PRESET_ORDER_KEY, JSON.stringify(cfg.presetOrder));
             if (Array.isArray(cfg.watched)) localStorage.setItem(WATCHED_FILTERS_KEY, JSON.stringify(cfg.watched));
             if (Array.isArray(cfg.indicatorOrder)) localStorage.setItem(INDICATOR_ORDER_KEY, JSON.stringify(cfg.indicatorOrder));
             if (Array.isArray(cfg.archived)) localStorage.setItem(ARCHIVED_INDICATORS_KEY, JSON.stringify(cfg.archived));
@@ -2311,7 +2517,8 @@
         }
       }
 
-      document.getElementById('watch-preset').addEventListener('click', toggleWatchedFilter);
+      // Ohne Argument aufrufen: der Klick-Event darf nicht als Filtername ankommen.
+      document.getElementById('watch-preset').addEventListener('click', () => toggleWatchedFilter());
       document.querySelectorAll('#watch-ranges input[data-watch-range]').forEach(box => {
         box.addEventListener('change', (event) => {
           toggleWatchRange(event.target.dataset.watchRange, event.target.checked);
