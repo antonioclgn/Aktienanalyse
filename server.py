@@ -90,8 +90,8 @@ CHART_RANGES = {
     "5d": "30m",
     "1mo": "1h",
     "1y": "1d",
-    "5y": "1wk",
-    "10y": "1wk",
+    "5y": "1d",
+    "10y": "1d",
 }
 DEFAULT_CHART_RANGE = "1y"
 # Beschriftung der Zeiträume in Benachrichtigungen (identisch zu den Chart-Knöpfen).
@@ -120,8 +120,8 @@ CHART_LOOKBACK_DAYS = {
     "5d": 3,    # ~14 30-Minuten-Kerzen für den RSI-Warmup (inkl. Wochenend-Puffer)
     "1mo": 5,   # ~14 Stundenkerzen für den RSI-Warmup (inkl. Wochenend-Puffer)
     "1y": 320,  # ~200 Handelstage inkl. Wochenenden/Feiertage
-    "5y": 300,  # ~40 Wochen (entspricht 200 Handelstagen)
-    "10y": 300,  # ~40 Wochen (entspricht 200 Handelstagen)
+    "5y": 320,  # ~200 Handelstage inkl. Wochenenden/Feiertage
+    "10y": 320,  # ~200 Handelstage inkl. Wochenenden/Feiertage
 }
 
 _cache = {}
@@ -230,10 +230,8 @@ def get_market_data(symbol):
     }
 
 
-# Fenster werden in HANDELSTAGEN angegeben. Bei Wochenkerzen (5y/10y) muss das
-# in Wochen umgerechnet werden (200 Handelstage ≈ 40 Wochen), sonst käme dort ein
-# 200-WOCHEN-Durchschnitt (~4 Jahre) heraus.
-TRADING_DAYS_PER_WEEK = 5
+# Fenster werden in HANDELSTAGEN angegeben. Alle Zeiträume liefern inzwischen
+# Tageskerzen (siehe CHART_RANGES), daher entspricht ein Fenster direkt der Kerzenzahl.
 MA_WINDOW_DEFAULT = 200          # Linie im Kurschart
 MA_DEVIATION_WINDOW_DEFAULT = 150  # Bezug für die Moving Average Deviation
 MA_WINDOW_MIN, MA_WINDOW_MAX = 5, 400
@@ -339,10 +337,7 @@ def moving_average_for_window(days, interval, symbol, all_closes, all_timestamps
             series.append(by_date[sorted_dates[idx]] if idx >= 0 else None)
         return series
 
-    bars = days
-    if interval == "1wk":
-        bars = max(1, round(days / TRADING_DAYS_PER_WEEK))
-    return compute_moving_average(all_closes, bars)
+    return compute_moving_average(all_closes, days)
 
 
 def get_daily_ema_by_date(symbol, period):
@@ -387,10 +382,7 @@ def ema_for_window(days, interval, symbol, all_closes, all_timestamps):
             series.append(by_date[sorted_dates[idx]] if idx >= 0 else None)
         return series
 
-    bars = days
-    if interval == "1wk":
-        bars = max(1, round(days / TRADING_DAYS_PER_WEEK))
-    return compute_ema_series(all_closes, bars)
+    return compute_ema_series(all_closes, days)
 
 
 def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
@@ -617,14 +609,14 @@ DURATION_UNITS = {                          # (Handelszeit-Sekunden, Einzahl, Me
     "5d": (3600, "Stunde", "Stunden"),      # 30-Minuten-Kerzen
     "1mo": (3600, "Stunde", "Stunden"),     # Stundenkerzen
     "1y": (OPEN_SECONDS_PER_DAY, "Tag", "Tagen"),          # 1 Handelstag
-    "5y": (5 * OPEN_SECONDS_PER_DAY, "Woche", "Wochen"),   # 5 Handelstage -> gleiche
-    "10y": (5 * OPEN_SECONDS_PER_DAY, "Woche", "Wochen"),  #   Uhrzeit eine Woche spaeter
+    "5y": (OPEN_SECONDS_PER_DAY, "Tag", "Tagen"),          # 1 Handelstag
+    "10y": (OPEN_SECONDS_PER_DAY, "Tag", "Tagen"),         # 1 Handelstag
 }
 DEFAULT_DURATION_UNIT = (OPEN_SECONDS_PER_DAY, "Tag", "Tagen")
 # Zeitfenster, deren Kerzenraster den Handelskalender weit genug abdeckt, um Feiertage
-# daran zu erkennen. Der Tages-Chart liefert nur den letzten Handelstag, die 5- und
-# 10-Jahres-Charts nur Wochenkerzen — dort entscheidet allein Mo-Fr.
-TRADING_GRID_RANGES = ("5d", "1mo", "1y")
+# daran zu erkennen. Der Tages-Chart liefert nur den letzten Handelstag, sonst
+# entscheidet dort allein Mo-Fr.
+TRADING_GRID_RANGES = ("5d", "1mo", "1y", "5y", "10y")
 
 
 def milestone_label(units, range_key):
@@ -768,9 +760,9 @@ def in_trading_window(timestamp, trading_days=None):
 def align_to_trading_window(timestamp, trading_days=None):
     """Einen Zeitpunkt in die Handelszeit schieben: liegt er nachts, am Wochenende oder an
     einem Feiertag, zählt die Dauer erst ab dem Beginn des nächsten Meldefensters. Nötig,
-    weil der Beginn einer Serie aus der Historie kommen kann (Wochenkerzen liegen z.B. auf
-    Montag 00:00) — ohne das Verschieben wäre „1 Tag" mal ein ganzer Handelstag und mal
-    nur dessen Rest."""
+    weil der Beginn einer Serie aus der Historie kommen kann (Kerzen-Zeitstempel liegen
+    z.B. auf Montag 00:00) — ohne das Verschieben wäre „1 Tag" mal ein ganzer Handelstag
+    und mal nur dessen Rest."""
     for _ in range(14):                     # genug für Wochenende plus Feiertage
         local = time.localtime(timestamp)
         daytime = local.tm_hour * 3600 + local.tm_min * 60 + local.tm_sec

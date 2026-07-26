@@ -1027,7 +1027,7 @@
       const QUIET_END_SECONDS = 7 * 3600 + 30 * 60;      // ab 07:30 zählt Handelszeit
       const QUIET_START_SECONDS = 23 * 3600;             // ab 23:00 ist Ruhe
       const OPEN_SECONDS_PER_DAY = QUIET_START_SECONDS - QUIET_END_SECONDS;
-      const TRADING_GRID_RANGES = new Set(['5d', '1mo', '1y']);
+      const TRADING_GRID_RANGES = new Set(['5d', '1mo', '1y', '5y', '10y']);
 
       function dayKey(ts) {
         const d = new Date(ts * 1000);

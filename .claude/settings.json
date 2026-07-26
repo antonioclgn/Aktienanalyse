@@ -88,7 +88,13 @@
       "Bash(curl -s -X POST http://127.0.0.1:8123/api/config -H \"Content-Type: application/json\" -d '{\"favorites\":[{\"symbol\":\"TEST\",\"name\":\"Test\"}],\"presets\":{},\"watched\":[],\"indicatorOrder\":[\"rsi\"],\"archived\":[\"macd\"],\"activeSettings\":{\"useRsi\":true,\"rsiBuy\":42}}')",
       "Bash(curl -s http://127.0.0.1:8123/api/config)",
       "Bash(kill %1)",
-      "Bash(jobs -l)"
+      "Bash(jobs -l)",
+      "Bash(curl -s \"http://localhost:8000/api/history?symbol=SXR8.DE&range=5y\" -o /tmp/hist5y.json -w \"5y status: %{http_code}\\\\n\")",
+      "Bash(curl -s \"http://localhost:8000/api/history?symbol=SXR8.DE&range=10y\" -o /tmp/hist10y.json -w \"10y status: %{http_code}\\\\n\")",
+      "Bash(python3 -c ' *)",
+      "Bash(time curl -s \"http://localhost:8000/api/history?symbol=SXR8.DE&range=10y\" -o /dev/null -w \"10y refetch status: %{http_code}, time: %{time_total}s\\\\n\")",
+      "Bash(tasklist //FI \"IMAGENAME eq python.exe\" //FO CSV)",
+      "Bash(taskkill //PID 8544 //F)"
     ]
   }
 }
