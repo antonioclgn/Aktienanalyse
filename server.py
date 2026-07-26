@@ -631,11 +631,17 @@ def milestone_seconds(range_key):
 # ---------------------------------------------------------------------------
 # Indikator-Registry
 #
-# Jeder Indikator ist EIN Eintrag: Aktiv-Schalter, Standard-Werte und eine Funktion,
-# die pro Kerze 'green'/'red'/None liefert. Einen neuen Indikator fügt man hier (und
-# spiegelbildlich in index.html) hinzu — Defaults, Kombinieren und Überwachung ergeben
-# sich generisch daraus. Bestehende Filter bleiben unberührt: fehlt einem alten Filter
-# der Aktiv-Schalter eines neuen Indikators, ist er per Default aus und zählt nicht mit.
+# Jeder Indikator ist EIN Eintrag: Aktiv-Schalter, Richtungs-Schalter, Standard-Werte
+# und eine Funktion, die pro Kerze 'green'/'red'/None liefert. Einen neuen Indikator fügt
+# man hier (und spiegelbildlich in index.html) hinzu — Defaults, Kombinieren und
+# Überwachung ergeben sich generisch daraus. Bestehende Filter bleiben unberührt: fehlt
+# einem alten Filter der Aktiv-Schalter eines neuen Indikators, ist er per Default aus
+# und zählt nicht mit.
+#
+# buy_key/sell_key: je Indikator einstellbar, ob er für Kauf- und/oder Verkaufssignale
+# zählt (manche Indikatoren taugen nur für eine Richtung). Fehlt der Schalter in einem
+# alten Filter, gilt er als AN — DEFAULT_FILTER_SETTINGS füllt ihn mit True auf, alte
+# Filter verhalten sich also exakt wie bisher.
 # ---------------------------------------------------------------------------
 
 def _classify(buy, sell):
@@ -687,15 +693,25 @@ def _macd_signals(ctx, s):
 
 INDICATORS = [
     {"key": "feargreed", "enabled_key": "useFearGreed", "signals": _feargreed_signals,
-     "defaults": {"useFearGreed": True, "fearGreedBuy": 25, "fearGreedSell": 75}},
+     "buy_key": "fearGreedForBuy", "sell_key": "fearGreedForSell",
+     "defaults": {"useFearGreed": True, "fearGreedBuy": 25, "fearGreedSell": 75,
+                  "fearGreedForBuy": True, "fearGreedForSell": True}},
     {"key": "smartdumb", "enabled_key": "useSmartDumb", "signals": _smartdumb_signals,
-     "defaults": {"useSmartDumb": True, "smartDumbBuy": 50, "smartDumbSell": -50}},
+     "buy_key": "smartDumbForBuy", "sell_key": "smartDumbForSell",
+     "defaults": {"useSmartDumb": True, "smartDumbBuy": 50, "smartDumbSell": -50,
+                  "smartDumbForBuy": True, "smartDumbForSell": True}},
     {"key": "rsi", "enabled_key": "useRsi", "signals": _rsi_signals,
-     "defaults": {"useRsi": True, "rsiBuy": 30, "rsiSell": 70}},
+     "buy_key": "rsiForBuy", "sell_key": "rsiForSell",
+     "defaults": {"useRsi": True, "rsiBuy": 30, "rsiSell": 70,
+                  "rsiForBuy": True, "rsiForSell": True}},
     {"key": "pma", "enabled_key": "usePma", "signals": _pma_signals,
-     "defaults": {"usePma": True, "pmaStdMultiplier": 1, "maDeviationWindow": MA_DEVIATION_WINDOW_DEFAULT}},
+     "buy_key": "pmaForBuy", "sell_key": "pmaForSell",
+     "defaults": {"usePma": True, "pmaStdMultiplier": 1, "maDeviationWindow": MA_DEVIATION_WINDOW_DEFAULT,
+                  "pmaForBuy": True, "pmaForSell": True}},
     {"key": "macd", "enabled_key": "useMacd", "signals": _macd_signals,
-     "defaults": {"useMacd": False, "macdBuy": 0, "macdSell": 0}},
+     "buy_key": "macdForBuy", "sell_key": "macdForSell",
+     "defaults": {"useMacd": False, "macdBuy": 0, "macdSell": 0,
+                  "macdForBuy": True, "macdForSell": True}},
 ]
 
 # Aus der Registry abgeleitet — nicht von Hand pflegen. Muss zu index.html passen.
@@ -846,23 +862,30 @@ def _indicator_context(data, timestamps, fg_times, fg_scores, sd_times, sd_sprea
 def combined_signal_series(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
     """Kombiniertes Signal ('green'/'red'/None) für JEDEN Balken der Historie.
 
-    Ein Balken ist grün/rot nur, wenn ALLE im Filter aktivierten Indikatoren dort in
-    dieselbe Richtung zeigen. Generisch über die Indikator-Registry — je Indikator
-    eine Signal-Reihe, dann Kerze für Kerze zusammengeführt."""
+    Ein Balken ist grün/rot nur, wenn ALLE Indikatoren, die im Filter aktiviert sind UND
+    für diese Richtung zählen, dort in dieselbe Richtung zeigen. Kauf und Verkauf haben
+    deshalb je ein eigenes Quorum: ein Indikator, der z.B. nur für Käufe taugt, ist bei
+    Verkäufen weder Zustimmung noch Veto — er ist schlicht nicht beteiligt.
+
+    Wichtig: ein LEERES Quorum darf kein Signal ergeben. all([]) ist True, ohne die
+    Prüfung auf Beteiligte wäre also jeder Balken rot, sobald kein Indikator mehr für
+    Verkäufe zählt."""
     timestamps = data.get("timestamps") or []
     enabled = [ind for ind in INDICATORS if settings.get(ind["enabled_key"])]
     if not timestamps or not enabled:
         return []
 
     ctx = _indicator_context(data, timestamps, fg_times, fg_scores, sd_times, sd_spreads)
-    per_indicator = [ind["signals"](ctx, settings) for ind in enabled]
+    series_by_key = {ind["key"]: ind["signals"](ctx, settings) for ind in enabled}
+    # Fehlender Richtungs-Schalter (alter Filter) gilt als AN.
+    buy_keys = [ind["key"] for ind in enabled if settings.get(ind["buy_key"], True)]
+    sell_keys = [ind["key"] for ind in enabled if settings.get(ind["sell_key"], True)]
 
     result = []
     for i in range(len(timestamps)):
-        bar = [series[i] for series in per_indicator]
-        if all(x == "green" for x in bar):
+        if buy_keys and all(series_by_key[k][i] == "green" for k in buy_keys):
             result.append("green")
-        elif all(x == "red" for x in bar):
+        elif sell_keys and all(series_by_key[k][i] == "red" for k in sell_keys):
             result.append("red")
         else:
             result.append(None)
@@ -1186,6 +1209,8 @@ def derive_watchlist(config):
         filters.append({
             "name": name, "ranges": entry.get("ranges") or [], "settings": settings,
             "minDelayDays": entry.get("minDelayDays") or 0,
+            # Einschränkung auf einzelne Werte; None/fehlend = alle Favoriten.
+            "symbols": entry.get("symbols"),
         })
     return {"favorites": favorites, "filters": filters, "updated": int(time.time())}
 
@@ -1231,6 +1256,10 @@ def run_alert_check(force=False):
         # Mindestdauer, bevor überhaupt eine erste Meldung kommt (0 = sofort, wie bisher).
         # Immer in echten Handelstagen gemessen, unabhängig vom überwachten Zeitfenster.
         min_delay_days = entry.get("minDelayDays") or 0
+        # Ein Filter kann auf einzelne Werte eingeschränkt sein. Fehlt das Feld (Altbestand)
+        # oder ist es keine Liste, gilt der Filter wie bisher für ALLE Favoriten.
+        raw_symbols = entry.get("symbols")
+        allowed_symbols = set(raw_symbols) if isinstance(raw_symbols, list) else None
         # Ein Filter kann mehrere Zeitfenster überwachen (z.B. 5 und 10 Jahre);
         # ältere Stände hatten nur ein einzelnes "range".
         raw_ranges = entry.get("ranges")
@@ -1245,6 +1274,10 @@ def run_alert_check(force=False):
             for favorite in favorites:
                 symbol = (favorite.get("symbol") or "").strip()
                 if not symbol:
+                    continue
+                # Auf einzelne Werte eingeschränkter Filter: alles andere überspringen.
+                # Gilt ZUSÄTZLICH zur Glocke am Favoriten (notify, siehe oben).
+                if allowed_symbols is not None and symbol not in allowed_symbols:
                     continue
                 key = f"{name}|{range_key}|{symbol}"
                 try:

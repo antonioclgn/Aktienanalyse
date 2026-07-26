@@ -109,6 +109,10 @@
               <option value="14">14 Tagen</option>
             </select>
           </div>
+          <!-- Werte-Auswahl wird aus den Favoriten erzeugt (renderWatchSymbols). -->
+          <div style="margin-top: 4px;">Nur für diese Werte:</div>
+          <div id="watch-symbols" style="display: flex; flex-direction: column; gap: 2px; margin-top: 2px;"></div>
+          <div id="watch-symbol-hint" style="margin-top: 3px; color: #999;"></div>
         </div>
         <div id="watched-filters" style="color: #666; font-size: 11px; margin-bottom: 8px;"></div>
         <!-- Einstellungen je Indikator werden aus der Registry erzeugt (renderIndicatorSettings). -->
@@ -151,23 +155,29 @@
       // ---------------------------------------------------------------------
       // Indikator-Registry
       //
-      // Jeder Indikator ist EIN Eintrag: Aktiv-Schalter, Standard-Werte, Einstellungs-
-      // Felder, Chart-Optik und eine build()-Funktion, die pro Kerze Wert + Signal
-      // liefert. Einstellungs-Panel, Charts, Kombinier-Logik und Defaults werden
-      // generisch daraus erzeugt. Einen neuen Indikator fügt man hier (und
+      // Jeder Indikator ist EIN Eintrag: Aktiv-Schalter, Richtungs-Schalter, Standard-
+      // Werte, Einstellungs-Felder, Chart-Optik und eine build()-Funktion, die pro Kerze
+      // Wert + Signal liefert. Einstellungs-Panel, Charts, Kombinier-Logik und Defaults
+      // werden generisch daraus erzeugt. Einen neuen Indikator fügt man hier (und
       // spiegelbildlich in server.py) hinzu — sonst nichts.
+      //
+      // buyKey/sellKey: je Indikator einstellbar, ob er für Kauf- und/oder Verkaufssignale
+      // zählt (manche Indikatoren taugen nur für eine Richtung). Siehe combinedSignalAt.
       //
       // Kompatibilität: neue Indikatoren sind per Default AUS. Alte Filter kennen den
       // Schalter nicht -> normalizeSettings füllt ihn mit "aus" -> er zählt nicht mit.
-      // Bestehende Filter/Benachrichtigungen bleiben also unverändert.
+      // Richtungs-Schalter sind umgekehrt per Default AN, damit alte Filter unverändert
+      // weiterlaufen. Bestehende Filter/Benachrichtigungen bleiben also unverändert.
       // ---------------------------------------------------------------------
       function sig(buy, sell) { return buy ? 'green' : (sell ? 'red' : null); }
 
       const INDICATORS = [
         {
           key: 'feargreed', enabledKey: 'useFearGreed', title: 'Fear & Greed Index',
+          buyKey: 'fearGreedForBuy', sellKey: 'fearGreedForSell',
           chartId: 'feargreed-chart', currentId: 'feargreed-current',
-          defaults: { useFearGreed: true, fearGreedBuy: 25, fearGreedSell: 75 },
+          defaults: { useFearGreed: true, fearGreedBuy: 25, fearGreedSell: 75,
+                      fearGreedForBuy: true, fearGreedForSell: true },
           settings: {
             toggleLabel: 'Fear & Greed berücksichtigen',
             hint: 'Standard: kaufen ≤ 25, verkaufen ≥ 75',
@@ -191,8 +201,10 @@
         },
         {
           key: 'smartdumb', enabledKey: 'useSmartDumb', title: 'Smart Money vs Dumb Money',
+          buyKey: 'smartDumbForBuy', sellKey: 'smartDumbForSell',
           chartId: 'smartdumb-chart', currentId: 'smartdumb-chart-current',
-          defaults: { useSmartDumb: true, smartDumbBuy: 50, smartDumbSell: -50 },
+          defaults: { useSmartDumb: true, smartDumbBuy: 50, smartDumbSell: -50,
+                      smartDumbForBuy: true, smartDumbForSell: true },
           settings: {
             toggleLabel: 'Smart/Dumb Money berücksichtigen',
             hint: 'Spread = Smart minus Dumb. Standard: kaufen ≥ 50, verkaufen ≤ −50.',
@@ -220,8 +232,10 @@
         },
         {
           key: 'rsi', enabledKey: 'useRsi', title: 'RSI 14',
+          buyKey: 'rsiForBuy', sellKey: 'rsiForSell',
           chartId: 'rsi-chart', currentId: 'rsi-chart-current',
-          defaults: { useRsi: true, rsiBuy: 30, rsiSell: 70 },
+          defaults: { useRsi: true, rsiBuy: 30, rsiSell: 70,
+                      rsiForBuy: true, rsiForSell: true },
           settings: {
             toggleLabel: 'RSI berücksichtigen',
             hint: 'Standard: kaufen ≤ 30, verkaufen ≥ 70',
@@ -244,8 +258,10 @@
         },
         {
           key: 'pma', enabledKey: 'usePma', title: 'Moving Average Deviation',
+          buyKey: 'pmaForBuy', sellKey: 'pmaForSell',
           chartId: 'price-ma-chart', currentId: 'price-ma-chart-current', titleId: 'price-ma-chart-title',
-          defaults: { usePma: true, pmaStdMultiplier: 1, maDeviationWindow: 150 },
+          defaults: { usePma: true, pmaStdMultiplier: 1, maDeviationWindow: 150,
+                      pmaForBuy: true, pmaForSell: true },
           settings: {
             toggleLabel: 'Moving-Average-Abweichung berücksichtigen',
             hint: 'Standard: 150-Tage-Durchschnitt, 1× Standardabweichung',
@@ -284,8 +300,10 @@
         },
         {
           key: 'macd', enabledKey: 'useMacd', title: 'MACD (12/26/9)',
+          buyKey: 'macdForBuy', sellKey: 'macdForSell',
           chartId: 'macd-chart', currentId: 'macd-chart-current',
-          defaults: { useMacd: false, macdBuy: 0, macdSell: 0 },
+          defaults: { useMacd: false, macdBuy: 0, macdSell: 0,
+                      macdForBuy: true, macdForSell: true },
           settings: {
             toggleLabel: 'MACD berücksichtigen',
             hint: 'Histogramm = MACD-Linie minus Signallinie. Standard: kaufen ≥ 0, verkaufen ≤ 0 (Linie kreuzt Signallinie).',
@@ -446,6 +464,10 @@
         document.querySelectorAll('#indicator-settings [data-toggle]').forEach(cb => {
           cb.checked = !!highlightSettings[cb.dataset.toggle];
         });
+        // Fehlender Richtungs-Schalter (alter Filter) gilt als AN — wie in combinedSignalAt.
+        document.querySelectorAll('#indicator-settings [data-direction]').forEach(cb => {
+          cb.checked = highlightSettings[cb.dataset.direction] !== false;
+        });
         document.querySelectorAll('#indicator-settings [data-setting]').forEach(inp => {
           inp.value = highlightSettings[inp.dataset.setting];
         });
@@ -461,15 +483,51 @@
         activeSettingsPushTimer = setTimeout(pushConfig, 600);
       }
 
-      function updateHighlightSetting(name, value) {
-        highlightSettings[name] = value;
+      // Mehrere Einstellungen in EINEM Zug setzen — nötig, wo eine Änderung zwei Schalter
+      // betrifft (Richtungs-Häkchen koppeln den Aktiv-Schalter, siehe bindDirectionSetting):
+      // sonst würde zwischendurch ein halber Zustand gespeichert und der Chart doppelt neu
+      // gezeichnet.
+      function updateHighlightSettings(patch) {
+        Object.assign(highlightSettings, patch);
         saveHighlightSettings();
         renderPresetOptions();
-        if (lastChartData && !SERVER_SIDE_SETTINGS.has(name)) {
+        const needsReload = Object.keys(patch).some(key => SERVER_SIDE_SETTINGS.has(key));
+        if (lastChartData && !needsReload) {
           rerenderHighlightCharts();
         } else {
           loadChart(currentSymbol, currentRange);
         }
+      }
+
+      function updateHighlightSetting(name, value) {
+        updateHighlightSettings({ [name]: value });
+      }
+
+      // Aktiv-Schalter und Richtungs-Häkchen sind gekoppelt, damit kein still wirkungsloser
+      // Zustand entsteht: ein Indikator ohne beide Richtungen zählt nirgends mehr mit.
+      // Deshalb schaltet "beide aus" ihn ganz ab — und wer ihn wieder anschaltet, bekommt
+      // beide Richtungen zurück (sonst wäre er trotz Häkchen weiter ohne Wirkung).
+      function setIndicatorDirection(indicatorKey, dirKey, checked) {
+        const ind = INDICATORS.find(i => i.key === indicatorKey);
+        if (!ind) return;
+        const patch = { [dirKey]: checked };
+        const other = dirKey === ind.buyKey ? ind.sellKey : ind.buyKey;
+        if (!checked && highlightSettings[other] === false) patch[ind.enabledKey] = false;
+        updateHighlightSettings(patch);
+        loadHighlightSettings();   // mitgeänderten Aktiv-Schalter im Panel nachziehen
+      }
+
+      function toggleIndicatorEnabled(enabledKey, checked) {
+        const ind = INDICATORS.find(i => i.enabledKey === enabledKey);
+        const patch = { [enabledKey]: checked };
+        if (ind && checked
+            && highlightSettings[ind.buyKey] === false
+            && highlightSettings[ind.sellKey] === false) {
+          patch[ind.buyKey] = true;
+          patch[ind.sellKey] = true;
+        }
+        updateHighlightSettings(patch);
+        loadHighlightSettings();
       }
 
       function bindNumberSetting(input, settingName) {
@@ -682,6 +740,24 @@
             card.appendChild(hint);
           }
 
+          // Richtung: manche Indikatoren taugen nur für eine Seite (z.B. RSI und die
+          // MA-Abweichung für Käufe). Abgewählt zählt der Indikator in dieser Richtung
+          // gar nicht mit — er kann sie dann weder auslösen noch verhindern.
+          const dirRow = document.createElement('div');
+          dirRow.style.cssText = 'display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin: 0 0 5px 22px; color: #666; font-size: 11px;';
+          dirRow.appendChild(document.createTextNode('Gilt für:'));
+          [{ key: ind.buyKey, label: 'Kauf' }, { key: ind.sellKey, label: 'Verkauf' }].forEach(dir => {
+            const label = document.createElement('label');
+            const box = document.createElement('input');
+            box.type = 'checkbox';
+            box.dataset.direction = dir.key;
+            box.dataset.indicator = ind.key;
+            label.appendChild(box);
+            label.appendChild(document.createTextNode(' ' + dir.label));
+            dirRow.appendChild(label);
+          });
+          card.appendChild(dirRow);
+
           (cfg.rows || []).forEach(row => {
             if (row.block) {
               const label = document.createElement('label');
@@ -725,7 +801,10 @@
         }
 
         container.querySelectorAll('[data-toggle]').forEach(cb => {
-          cb.addEventListener('change', event => updateHighlightSetting(cb.dataset.toggle, event.target.checked));
+          cb.addEventListener('change', event => toggleIndicatorEnabled(cb.dataset.toggle, event.target.checked));
+        });
+        container.querySelectorAll('[data-direction]').forEach(cb => {
+          cb.addEventListener('change', event => setIndicatorDirection(cb.dataset.indicator, cb.dataset.direction, event.target.checked));
         });
         container.querySelectorAll('[data-setting]').forEach(inp => bindNumberSetting(inp, inp.dataset.setting));
         container.querySelectorAll('[data-archive]').forEach(btn => {
@@ -979,14 +1058,24 @@
         return built;
       }
 
-      // Gemeinsames Signal an Balken i: nur wenn ALLE aktivierten Indikatoren dort in
-      // dieselbe Richtung zeigen (sonst null). Dieselbe Regel wie die Überwachung im Server.
+      // Gemeinsames Signal an Balken i: nur wenn ALLE Indikatoren, die aktiviert sind UND
+      // für diese Richtung zählen, dort in dieselbe Richtung zeigen (sonst null). Kauf und
+      // Verkauf haben je ein eigenes Quorum: ein Indikator, der z.B. nur für Käufe taugt,
+      // ist bei Verkäufen weder Zustimmung noch Veto — er ist schlicht nicht beteiligt.
+      // Dieselbe Regel wie combined_signal_series() im Server.
+      //
+      // Wichtig: ein LEERES Quorum darf kein Signal ergeben. [].every(...) ist true, ohne
+      // die Längenprüfung wäre also jeder Balken rot, sobald kein Indikator mehr für
+      // Verkäufe zählt.
       function combinedSignalAt(built, i, settings) {
-        const enabled = INDICATORS.filter(ind => settings[ind.enabledKey]);
-        if (!enabled.length) return null;
         const at = ind => (built[ind.key] ? built[ind.key].signals[i] : null) || null;
-        if (enabled.every(ind => at(ind) === 'green')) return 'green';
-        if (enabled.every(ind => at(ind) === 'red')) return 'red';
+        // Fehlender Richtungs-Schalter (alter Filter) gilt als AN.
+        const quorum = (dirKey, want) => {
+          const parts = INDICATORS.filter(ind => settings[ind.enabledKey] && settings[ind[dirKey]] !== false);
+          return parts.length > 0 && parts.every(ind => at(ind) === want);
+        };
+        if (quorum('buyKey', 'green')) return 'green';
+        if (quorum('sellKey', 'red')) return 'red';
         return null;
       }
 
@@ -1556,6 +1645,8 @@
         loadData(currentSymbol);
         loadChart(currentSymbol, currentRange);
         updateFavoriteStar();
+        // Der Hinweis zur Werte-Auswahl bezieht sich auf den angezeigten Wert.
+        updateWatchUi();
       }
 
       function updateFavoriteStar() {
@@ -1749,18 +1840,24 @@
         return stored
           .map(entry => {
             // Ältere Stände: nur Name (String) oder ein einzelnes Zeitfenster ({name, range}).
-            if (typeof entry === 'string') return { name: entry, ranges: [DEFAULT_ALERT_RANGE], minDelayDays: DEFAULT_MIN_DELAY_DAYS };
+              if (typeof entry === 'string') return { name: entry, ranges: [DEFAULT_ALERT_RANGE], minDelayDays: DEFAULT_MIN_DELAY_DAYS, symbols: null };
             if (!entry || !entry.name) return null;
             const ranges = Array.isArray(entry.ranges)
               ? entry.ranges
               : (entry.range ? [entry.range] : [DEFAULT_ALERT_RANGE]);
             const minDelayDays = MIN_DELAY_OPTIONS.includes(entry.minDelayDays) ? entry.minDelayDays : DEFAULT_MIN_DELAY_DAYS;
-            return { name: entry.name, ranges, minDelayDays };
+            // Einschränkung auf einzelne Werte; null/fehlend = alle Favoriten. Bewusst NICHT
+            // gegen die Favoritenliste gefiltert: während pullConfig kann sie kurz leer sein,
+            // das würde die Auswahl löschen. Ein Symbol ohne Favorit läuft ohnehin ins Leere,
+            // weil die Überwachung im Server nur über Favoriten iteriert.
+            const symbols = Array.isArray(entry.symbols) ? entry.symbols : null;
+            return { name: entry.name, ranges, minDelayDays, symbols };
           })
           .filter(entry => entry)
           .filter(entry => !hasPresets || known(entry.name))
           // Nur bekannte Zeitfenster behalten; ohne gültiges Fenster fällt der Filter raus.
-          .map(entry => ({ name: entry.name, ranges: entry.ranges.filter(r => RANGE_LABELS[r]), minDelayDays: entry.minDelayDays }))
+          .map(entry => ({ name: entry.name, ranges: entry.ranges.filter(r => RANGE_LABELS[r]),
+                           minDelayDays: entry.minDelayDays, symbols: entry.symbols }))
           .filter(entry => entry.ranges.length);
       }
 
@@ -1813,13 +1910,78 @@
         delaySelect.value = String(entry ? entry.minDelayDays : DEFAULT_MIN_DELAY_DAYS);
         delaySelect.disabled = disabled || !entry;
 
+        renderWatchSymbols(entry, disabled);
+
         const active = watchedFilters();
         document.getElementById('watched-filters').textContent = active.length
           ? 'Überwacht: ' + active
               .map(f => `${f.name} (${f.ranges.map(r => RANGE_LABELS[r]).join(', ')}`
-                + `${f.minDelayDays ? `, ab ${f.minDelayDays} Tag${f.minDelayDays === 1 ? '' : 'en'}` : ''})`)
+                + `${f.minDelayDays ? `, ab ${f.minDelayDays} Tag${f.minDelayDays === 1 ? '' : 'en'}` : ''}`
+                + `${f.symbols ? `, nur ${f.symbols.map(symbolLabel).join(', ')}` : ''})`)
               .join('; ') + favoritesSuffix()
           : 'Kein Filter überwacht (☆ markiert die Variante und wählt ein Zeitfenster).';
+      }
+
+      function symbolLabel(symbol) {
+        const fav = loadFavorites().find(f => f.symbol === symbol);
+        return (fav && fav.name) || symbol;
+      }
+
+      // Werte-Auswahl des gewählten Filters: "Alle Favoriten" ist der Hauptschalter,
+      // darunter je Favorit ein Häkchen. Ohne Einschränkung (symbols = null) gilt der
+      // Filter für alle Favoriten — auch für später hinzugefügte.
+      function renderWatchSymbols(entry, disabled) {
+        const container = document.getElementById('watch-symbols');
+        container.innerHTML = '';
+        const favs = loadFavorites();
+        const chosen = entry && entry.symbols;
+        const inactive = disabled || !entry;
+
+        const allLabel = document.createElement('label');
+        const allBox = document.createElement('input');
+        allBox.type = 'checkbox';
+        allBox.checked = !chosen;
+        allBox.disabled = inactive;
+        allBox.addEventListener('change', () => setWatchSymbols(allBox.checked ? null : favs.map(f => f.symbol)));
+        allLabel.appendChild(allBox);
+        allLabel.appendChild(document.createTextNode(' Alle Favoriten'));
+        container.appendChild(allLabel);
+
+        favs.forEach(fav => {
+          const label = document.createElement('label');
+          label.style.marginLeft = '14px';
+          const box = document.createElement('input');
+          box.type = 'checkbox';
+          box.checked = chosen ? chosen.includes(fav.symbol) : true;
+          // Ohne Einschränkung sind alle Häkchen gesetzt, aber nicht einzeln abwählbar —
+          // dafür erst "Alle Favoriten" abschalten.
+          box.disabled = inactive || !chosen;
+          box.addEventListener('change', () => {
+            const next = box.checked
+              ? [...new Set([...(chosen || []), fav.symbol])]
+              : (chosen || []).filter(s => s !== fav.symbol);
+            // Letztes Häkchen entfernt -> zurück auf "alle", sonst bliebe ein toter Filter.
+            setWatchSymbols(next.length ? next : null);
+          });
+          label.appendChild(box);
+          label.appendChild(document.createTextNode(' ' + (fav.name || fav.symbol)));
+          container.appendChild(label);
+        });
+
+        // Die Balken im Chart zeigen den Filter immer — auch bei Werten, die er nicht
+        // überwacht. Ohne Hinweis wirkte das wie eine Meldung, die nie kommt.
+        const hint = document.getElementById('watch-symbol-hint');
+        hint.textContent = (chosen && !chosen.includes(currentSymbol))
+          ? 'Für den angezeigten Wert käme keine Meldung — die Balken sind nur eine Vorschau.'
+          : '';
+      }
+
+      function setWatchSymbols(symbols) {
+        const name = document.getElementById('preset-select').value;
+        if (name === CUSTOM_PRESET_LABEL || !filterSettingsByName(name)) return;
+        const watched = loadWatchedFilters();
+        if (!watched.some(f => f.name === name)) return; // Filter muss erst überwacht werden (☆)
+        saveWatchedFilters(watched.map(f => (f.name === name ? { ...f, symbols } : f)));
       }
 
       // Wie viele Favoriten die Überwachung tatsächlich erreicht — einzelne können per
@@ -1843,7 +2005,7 @@
           saveWatchedFilters(watched.filter(f => f.name !== name));
         } else {
           const preset = RANGE_LABELS[currentRange] ? currentRange : DEFAULT_ALERT_RANGE;
-          saveWatchedFilters([...watched, { name, ranges: [preset] }]);
+          saveWatchedFilters([...watched, { name, ranges: [preset], symbols: null }]);
           requestCheck();
         }
       }
@@ -1864,7 +2026,7 @@
             ? watched.map(f => (f.name === name ? { ...f, ranges } : f))
             : watched.filter(f => f.name !== name);
         } else if (on) {
-          next = [...watched, { name, ranges: [range], minDelayDays: DEFAULT_MIN_DELAY_DAYS }];
+          next = [...watched, { name, ranges: [range], minDelayDays: DEFAULT_MIN_DELAY_DAYS, symbols: null }];
         } else {
           return;
         }
