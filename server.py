@@ -1494,6 +1494,7 @@ class Handler(BaseHTTPRequestHandler):
                 "favorites": payload.get("favorites") or [],
                 "presets": payload.get("presets") or {},
                 "watched": payload.get("watched") or [],
+                "indicatorOrder": payload.get("indicatorOrder") or [],
                 "updated": int(time.time()),
             }
             write_json_file(CONFIG_FILE, config)

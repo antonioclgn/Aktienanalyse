@@ -19,6 +19,12 @@
      sonst sieht die Seite am Handy „aufgebläht" aus. */
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; height: 100%; overflow-y: hidden; }
   body { margin: 0; height: 100vh; overflow-y: hidden; display: flex; flex-direction: column; }
+  /* Drag & Drop: Reihenfolge von Indikatoren (Balken-Einstellungen) und Favoriten. */
+  .drag-handle { cursor: grab; color: #bbb; user-select: none; flex-shrink: 0; }
+  .drag-handle:active { cursor: grabbing; }
+  .dragging { opacity: 0.4; }
+  .drag-over-top { border-top: 2px solid #2563eb; }
+  .drag-over-bottom { border-bottom: 2px solid #2563eb; }
 </style>
 </head>
 <body>
@@ -139,6 +145,7 @@
       const ACTIVE_SETTINGS_KEY = 'aktienanalyse-highlight-active';
       const PRESETS_KEY = 'aktienanalyse-highlight-presets';
       const ARCHIVED_INDICATORS_KEY = 'aktienanalyse-archived-indicators';
+      const INDICATOR_ORDER_KEY = 'aktienanalyse-indicator-order';
       const DEFAULT_PRESET_NAME = 'Standard';
       const CUSTOM_PRESET_LABEL = 'Eigene (ungespeichert)';
       // ---------------------------------------------------------------------
@@ -517,6 +524,113 @@
         if (lastChartData) rerenderHighlightCharts();
       }
 
+      // Vom Nutzer gewählte Reihenfolge der Indikatoren (nur Anzeige: Reihenfolge im
+      // Einstellungs-Panel UND der Indikator-Charts). Die Balken-Berechnung ist davon
+      // unberührt. Wird über /api/config server-übergreifend synchronisiert.
+      function loadIndicatorOrder() {
+        return readStored(INDICATOR_ORDER_KEY, []);
+      }
+
+      function saveIndicatorOrder(keys) {
+        localStorage.setItem(INDICATOR_ORDER_KEY, JSON.stringify(keys));
+        pushConfig();
+      }
+
+      // INDICATORS nach der gespeicherten Reihenfolge sortiert. Keys, die (noch) nicht
+      // in der gespeicherten Liste stehen — etwa neu hinzugefügte Indikatoren —, werden
+      // in Registry-Reihenfolge hinten angehängt. So bleibt alles robust, egal was
+      // gespeichert ist.
+      function orderedIndicators() {
+        const order = loadIndicatorOrder();
+        const rank = new Map(order.map((key, i) => [key, i]));
+        return INDICATORS
+          .map((ind, i) => ({ ind, i }))
+          .sort((a, b) => {
+            const ra = rank.has(a.ind.key) ? rank.get(a.ind.key) : order.length + a.i;
+            const rb = rank.has(b.ind.key) ? rank.get(b.ind.key) : order.length + b.i;
+            return ra - rb;
+          })
+          .map(entry => entry.ind);
+      }
+
+      // Einen Indikator per Drag & Drop verschieben: draggedKey relativ zu targetKey
+      // (davor/danach) einsortieren. Es wird die volle Key-Liste (inkl. archivierter)
+      // persistiert, damit deren Positionen stabil bleiben.
+      function applyIndicatorReorder(draggedKey, targetKey, placeBefore) {
+        if (draggedKey === targetKey) return;
+        const keys = orderedIndicators().map(ind => ind.key);
+        const from = keys.indexOf(draggedKey);
+        if (from === -1) return;
+        keys.splice(from, 1);
+        let target = keys.indexOf(targetKey);
+        if (target === -1) return;
+        if (!placeBefore) target += 1;
+        keys.splice(target, 0, draggedKey);
+        saveIndicatorOrder(keys);
+        renderIndicatorSettings();
+        renderIndicatorChartSkeletons();
+        loadHighlightSettings();
+        if (lastChartData) rerenderHighlightCharts();
+      }
+
+      // Wiederverwendbare HTML5-Drag&Drop-Sortierung für eine Liste. Jedes Item braucht
+      // ein data-Attribut (dataKey), das seine Identität trägt. onDrop(draggedId,
+      // targetId, placeBefore) führt die eigentliche Umsortierung/Persistenz durch.
+      // handleSelector (optional): Nur ein Ziehen an diesem Griff startet den Drag —
+      // Klicks/Eingaben in Feldern, Links und Buttons bleiben so unberührt.
+      function makeSortable(container, itemSelector, dataAttr, handleSelector, onDrop) {
+        let draggedId = null;
+        const clearMarkers = () => container.querySelectorAll('.drag-over-top, .drag-over-bottom')
+          .forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
+
+        container.querySelectorAll(itemSelector).forEach(item => {
+          // Mit Griff: Item ist erst ziehbar, wenn der Drag am Griff beginnt.
+          const handle = handleSelector ? item.querySelector(handleSelector) : null;
+          if (handle) {
+            item.draggable = false;
+            handle.addEventListener('mousedown', () => { item.draggable = true; });
+            item.addEventListener('mouseup', () => { item.draggable = false; });
+          } else {
+            item.draggable = true;
+          }
+          item.addEventListener('dragstart', event => {
+            draggedId = item.dataset[dataAttr];
+            item.classList.add('dragging');
+            event.dataTransfer.effectAllowed = 'move';
+            // Firefox startet den Drag nur, wenn dataTransfer gesetzt ist.
+            try { event.dataTransfer.setData('text/plain', draggedId); } catch (e) {}
+          });
+          item.addEventListener('dragend', () => {
+            item.classList.remove('dragging');
+            clearMarkers();
+            draggedId = null;
+            if (handle) item.draggable = false;
+          });
+          item.addEventListener('dragover', event => {
+            if (draggedId == null) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            const rect = item.getBoundingClientRect();
+            const before = event.clientY < rect.top + rect.height / 2;
+            clearMarkers();
+            if (item.dataset[dataAttr] !== draggedId) {
+              item.classList.add(before ? 'drag-over-top' : 'drag-over-bottom');
+            }
+          });
+          item.addEventListener('drop', event => {
+            if (draggedId == null) return;
+            event.preventDefault();
+            const rect = item.getBoundingClientRect();
+            const before = event.clientY < rect.top + rect.height / 2;
+            const targetId = item.dataset[dataAttr];
+            const dragged = draggedId;
+            clearMarkers();
+            draggedId = null;
+            if (dragged !== targetId) onDrop(dragged, targetId, before);
+          });
+        });
+      }
+
       // Einstellungs-Panel komplett aus der Registry erzeugen: je Indikator ein
       // Schalter, ein Hinweis und seine Zahlenfelder. Danach die Felder verdrahten.
       // Archivierte Indikatoren werden stattdessen als knappe Zeile mit
@@ -526,10 +640,19 @@
         container.innerHTML = '';
         const archivedKeys = loadArchivedIndicators();
 
-        INDICATORS.filter(ind => !archivedKeys.has(ind.key)).forEach(ind => {
+        orderedIndicators().filter(ind => !archivedKeys.has(ind.key)).forEach(ind => {
           const cfg = ind.settings || {};
+          // Jeder Indikator ist eine zusammenhängende Karte -> als eine Einheit ziehbar.
+          const card = document.createElement('div');
+          card.className = 'indicator-card';
+          card.dataset.indicatorKey = ind.key;
           const toggleRow = document.createElement('div');
           toggleRow.style.cssText = 'display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 3px;';
+          const handle = document.createElement('span');
+          handle.className = 'drag-handle';
+          handle.textContent = '⠿';
+          handle.title = 'Zum Umsortieren ziehen';
+          toggleRow.appendChild(handle);
           const toggle = document.createElement('label');
           toggle.style.cssText = 'flex: 1; min-width: 0;';
           const cb = document.createElement('input');
@@ -545,13 +668,13 @@
           archiveBtn.title = 'Indikator ausblenden (Einstellungen bleiben erhalten)';
           archiveBtn.style.cssText = 'background: none; border: none; color: #999; font-size: 10px; cursor: pointer; padding: 0; white-space: nowrap;';
           toggleRow.appendChild(archiveBtn);
-          container.appendChild(toggleRow);
+          card.appendChild(toggleRow);
 
           if (cfg.hint) {
             const hint = document.createElement('div');
             hint.style.cssText = 'color: #666; margin: 0 0 3px 22px; font-size: 11px;';
             hint.textContent = cfg.hint;
-            container.appendChild(hint);
+            card.appendChild(hint);
           }
 
           (cfg.rows || []).forEach(row => {
@@ -559,7 +682,7 @@
               const label = document.createElement('label');
               label.style.cssText = 'display: block; margin: 0 0 7px 22px;';
               appendSettingField(label, row.field);
-              container.appendChild(label);
+              card.appendChild(label);
             } else {
               const line = document.createElement('div');
               line.style.cssText = 'display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 0 0 7px 22px;';
@@ -568,9 +691,10 @@
                 appendSettingField(label, field);
                 line.appendChild(label);
               });
-              container.appendChild(line);
+              card.appendChild(line);
             }
           });
+          container.appendChild(card);
         });
 
         const archivedIndicators = INDICATORS.filter(ind => archivedKeys.has(ind.key));
@@ -605,6 +729,9 @@
         container.querySelectorAll('[data-unarchive]').forEach(btn => {
           btn.addEventListener('click', () => setIndicatorArchived(btn.dataset.unarchive, false));
         });
+        // Indikator-Karten per Drag & Drop am Griff umsortieren.
+        makeSortable(container, '.indicator-card', 'indicatorKey', '.drag-handle',
+          (draggedKey, targetKey, placeBefore) => applyIndicatorReorder(draggedKey, targetKey, placeBefore));
       }
 
       // Für jeden (nicht archivierten) Indikator seinen Chart-Rahmen (Titel,
@@ -614,7 +741,8 @@
         container.innerHTML = '';
         const ns = 'http://www.w3.org/2000/svg';
         const archivedKeys = loadArchivedIndicators();
-        INDICATORS.filter(ind => !archivedKeys.has(ind.key)).forEach(ind => {
+        // Reihenfolge folgt den Balken-Einstellungen (orderedIndicators).
+        orderedIndicators().filter(ind => !archivedKeys.has(ind.key)).forEach(ind => {
           const header = document.createElement('div');
           header.style.cssText = 'font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;';
           const title = document.createElement('span');
@@ -1428,18 +1556,28 @@
         const favs = loadFavorites();
         favs.forEach((fav, index) => {
           const li = document.createElement('li');
+          li.className = 'favorite-item';
+          li.dataset.index = index;
           li.style.marginBottom = '6px';
           li.style.display = 'flex';
           li.style.justifyContent = 'space-between';
           li.style.alignItems = 'center';
 
+          const handle = document.createElement('span');
+          handle.className = 'drag-handle';
+          handle.textContent = '⠿';
+          handle.title = 'Zum Umsortieren ziehen';
+          handle.style.marginRight = '4px';
+
           const link = document.createElement('a');
           link.href = '#';
+          link.draggable = false; // sonst zieht der Browser die Link-URL statt der Zeile
           link.textContent = fav.name || fav.symbol;
           link.title = fav.symbol;
           link.style.cursor = 'pointer';
           link.style.fontSize = '13px';
           link.style.color = 'black';
+          link.style.flex = '1';
           link.style.overflow = 'hidden';
           link.style.textOverflow = 'ellipsis';
           link.style.whiteSpace = 'nowrap';
@@ -1486,10 +1624,30 @@
           actions.appendChild(downBtn);
           actions.appendChild(removeBtn);
 
+          li.appendChild(handle);
           li.appendChild(link);
           li.appendChild(actions);
           list.appendChild(li);
         });
+        // Favoriten per Drag & Drop am Griff umsortieren (die ↑/↓-Buttons bleiben zusätzlich).
+        makeSortable(list, '.favorite-item', 'index', '.drag-handle',
+          (fromIndex, toIndex, placeBefore) => reorderFavorites(+fromIndex, +toIndex, placeBefore));
+      }
+
+      // Favorit von fromIndex vor/hinter toIndex einsortieren und persistieren.
+      function reorderFavorites(fromIndex, toIndex, placeBefore) {
+        const favs = loadFavorites();
+        if (fromIndex < 0 || fromIndex >= favs.length) return;
+        const [moved] = favs.splice(fromIndex, 1);
+        // Zielindex nach dem Entfernen neu bestimmen.
+        let target = toIndex;
+        if (fromIndex < toIndex) target -= 1;
+        if (!placeBefore) target += 1;
+        target = Math.max(0, Math.min(target, favs.length));
+        favs.splice(target, 0, moved);
+        saveFavorites(favs);
+        renderFavorites();
+        pushConfig();
       }
 
       document.getElementById('favorite-star').addEventListener('click', () => {
@@ -1677,6 +1835,7 @@
               favorites: loadFavorites(),
               presets: readStored(PRESETS_KEY, {}),
               watched: loadWatchedFilters(),
+              indicatorOrder: loadIndicatorOrder(),
             }),
           });
         } catch (err) {
@@ -1687,7 +1846,8 @@
       function configHasData(cfg) {
         return !!cfg && ((cfg.favorites && cfg.favorites.length)
           || (cfg.presets && Object.keys(cfg.presets).length)
-          || (cfg.watched && cfg.watched.length));
+          || (cfg.watched && cfg.watched.length)
+          || (cfg.indicatorOrder && cfg.indicatorOrder.length));
       }
 
       // Beim Öffnen: Server-Stand in den localStorage spiegeln (Server gewinnt).
@@ -1700,6 +1860,7 @@
             if (Array.isArray(cfg.favorites)) localStorage.setItem(FAVORITES_KEY, JSON.stringify(cfg.favorites));
             if (cfg.presets && typeof cfg.presets === 'object') localStorage.setItem(PRESETS_KEY, JSON.stringify(cfg.presets));
             if (Array.isArray(cfg.watched)) localStorage.setItem(WATCHED_FILTERS_KEY, JSON.stringify(cfg.watched));
+            if (Array.isArray(cfg.indicatorOrder)) localStorage.setItem(INDICATOR_ORDER_KEY, JSON.stringify(cfg.indicatorOrder));
           } else {
             await pushConfig();
           }
@@ -1960,6 +2121,11 @@
         // erneut durchsetzen, damit die ermittelten Filternamen exakt auf dieselbe
         // Anzeige wie im E-Mail-Link einwirken.
         applyDeepLink();
+        // Server kann eine synchronisierte Indikator-Reihenfolge geliefert haben ->
+        // Einstellungs-Panel und Charts danach neu aufbauen.
+        renderIndicatorSettings();
+        renderIndicatorChartSkeletons();
+        loadHighlightSettings();
         renderFavorites();
         refreshNotifications();
         syncUiFromState();
