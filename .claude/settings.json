@@ -81,7 +81,8 @@
       "Bash(taskkill //PID 20268 //F)",
       "Bash(node verify_search_move.js)",
       "Bash(taskkill //PID 3192 //F)",
-      "Bash(taskkill //PID 12252 //F)"
+      "Bash(taskkill //PID 12252 //F)",
+      "Bash(node verify_fill.js)"
     ]
   }
 }

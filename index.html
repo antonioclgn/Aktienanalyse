@@ -46,13 +46,13 @@
   </div>
 
   <div class="dashboard-layout" style="display: flex; align-items: flex-start; flex: 1; min-height: 0;">
-    <div style="flex: 0 1 624px; min-width: 0; padding: 8px 16px 8px 8px; box-sizing: border-box; height: 100%; overflow-y: auto; overflow-x: hidden;">
+    <div style="flex: 624 1 0; min-width: 0; padding: 8px 16px 8px 8px; box-sizing: border-box; height: 100%; overflow-y: auto; overflow-x: hidden;">
 
       <p>Ausgewählt: <span id="selected-instrument">iShares Core S&P 500 UCITS ETF USD (Acc) (SXR8.DE)</span>
         <button id="favorite-star" type="button" title="Zu Favoriten" style="background: none; border: none; cursor: pointer; font-size: 18px; line-height: 1; vertical-align: middle; padding: 0;">☆</button>
       </p>
 
-      <div style="max-width: 600px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
         <div id="range-buttons">
           <button type="button" data-range="1d">Tag</button>
           <button type="button" data-range="5d">Woche</button>
@@ -66,13 +66,13 @@
           <div id="current-price" style="font-size: 11px; color: #666;"></div>
         </div>
       </div>
-      <svg id="chart" viewBox="0 0 600 220" style="max-width: 600px; width: 100%; height: auto; display: block;"></svg>
+      <svg id="chart" viewBox="0 0 600 220" style="width: 100%; height: auto; display: block;"></svg>
 
       <!-- Indikator-Charts werden aus der Registry erzeugt (renderIndicatorChartSkeletons). -->
       <div id="indicator-charts"></div>
     </div>
 
-    <aside class="bar-settings-column" style="flex: 1 1 300px; min-width: 300px; max-width: 500px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; height: 100%; overflow-y: auto; overflow-x: hidden;">
+    <aside class="bar-settings-column" style="flex: 500 1 0; min-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; height: 100%; overflow-y: auto; overflow-x: hidden;">
       <section class="bar-settings" style="padding-bottom: 24px; min-height: 25vh; font-size: 12px;">
         <h2 style="font-size: 14px; margin: 0 0 8px;">Balken-Einstellungen</h2>
         <div style="color: #666; margin-bottom: 6px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen. Gilt für alle Werte.</div>
@@ -110,7 +110,7 @@
       </section>
     </aside>
 
-    <aside class="favorites-column" style="flex: 0 0 auto; width: 18vw; min-width: 230px; max-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; height: 100%; overflow-y: auto; overflow-x: hidden;">
+    <aside class="favorites-column" style="flex: 300 1 0; min-width: 230px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; height: 100%; overflow-y: auto; overflow-x: hidden;">
       <h2 style="font-size: 14px; margin-top: 0;">Favoriten</h2>
       <ul id="favorites-list" style="list-style: none; padding: 0; margin: 0;"></ul>
     </aside>
@@ -616,7 +616,7 @@
         const archivedKeys = loadArchivedIndicators();
         INDICATORS.filter(ind => !archivedKeys.has(ind.key)).forEach(ind => {
           const header = document.createElement('div');
-          header.style.cssText = 'max-width: 600px; font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;';
+          header.style.cssText = 'font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;';
           const title = document.createElement('span');
           if (ind.titleId) title.id = ind.titleId;
           title.textContent = ind.title;
@@ -627,7 +627,7 @@
           const svg = document.createElementNS(ns, 'svg');
           svg.id = ind.chartId;
           svg.setAttribute('viewBox', '0 0 600 90');
-          svg.style.cssText = 'max-width: 600px; width: 100%; height: auto; display: block;';
+          svg.style.cssText = 'width: 100%; height: auto; display: block;';
           container.appendChild(header);
           container.appendChild(svg);
         });
