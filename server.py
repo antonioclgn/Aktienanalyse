@@ -1542,7 +1542,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
 
-        # Geräteübergreifende Config (Favoriten, Varianten, überwachte Filter). Der
+        # Geräteübergreifende Config (Favoriten, Varianten, überwachte Filter,
+        # Indikator-Reihenfolge, archivierte Indikatoren, aktive Einstellungen). Der
         # Browser schreibt hier bei jeder Änderung; daraus wird zugleich die
         # watchlist.json für die Überwachung abgeleitet.
         if parsed.path == "/api/config":
@@ -1555,6 +1556,8 @@ class Handler(BaseHTTPRequestHandler):
                 "presets": payload.get("presets") or {},
                 "watched": payload.get("watched") or [],
                 "indicatorOrder": payload.get("indicatorOrder") or [],
+                "archived": payload.get("archived") or [],
+                "activeSettings": payload.get("activeSettings") or {},
                 "updated": int(time.time()),
             }
             write_json_file(CONFIG_FILE, config)

@@ -452,8 +452,13 @@
         renderPresetOptions();
       }
 
+      // Wird bei jeder Änderung aufgerufen, auch während des Ziehens eines Reglers
+      // (alle 50ms) — der Server-Push wird deshalb entprellt statt direkt ausgelöst.
+      let activeSettingsPushTimer = null;
       function saveHighlightSettings() {
         localStorage.setItem(ACTIVE_SETTINGS_KEY, JSON.stringify(highlightSettings));
+        clearTimeout(activeSettingsPushTimer);
+        activeSettingsPushTimer = setTimeout(pushConfig, 600);
       }
 
       function updateHighlightSetting(name, value) {
@@ -508,8 +513,7 @@
       // Archivierte Indikatoren: rein eine Anzeige-Einstellung (blendet Chart +
       // Einstellungen aus, ohne "berücksichtigen"/Schwellen anzufassen) — bewusst
       // getrennt vom Ein/Aus-Schalter, damit Archivieren nie die Balken-Berechnung
-      // verändert. Nur lokal (pro Browser), nicht Teil der server-synchronisierten
-      // Presets/Watchlist.
+      // verändert. Wird über /api/config server-übergreifend synchronisiert.
       function loadArchivedIndicators() {
         return new Set(readStored(ARCHIVED_INDICATORS_KEY, []));
       }
@@ -518,6 +522,7 @@
         const archivedKeys = loadArchivedIndicators();
         if (archived) archivedKeys.add(key); else archivedKeys.delete(key);
         localStorage.setItem(ARCHIVED_INDICATORS_KEY, JSON.stringify([...archivedKeys]));
+        pushConfig();
         renderIndicatorSettings();
         renderIndicatorChartSkeletons();
         loadHighlightSettings();
@@ -1864,7 +1869,8 @@
       }
 
       // Geräteübergreifende Synchronisation (Variante A): Der Server ist die Quelle
-      // der Wahrheit für Favoriten, gespeicherte Varianten und überwachte Filter.
+      // der Wahrheit für Favoriten, gespeicherte Varianten, überwachte Filter,
+      // Indikator-Reihenfolge, archivierte Indikatoren und die aktiven Einstellungen.
       // Bei jeder Änderung wird der gesamte Stand hochgeladen; daraus leitet der
       // Server auch die Watchlist für die Überwachung ab.
       async function pushConfig() {
@@ -1877,6 +1883,8 @@
               presets: readStored(PRESETS_KEY, {}),
               watched: loadWatchedFilters(),
               indicatorOrder: loadIndicatorOrder(),
+              archived: [...loadArchivedIndicators()],
+              activeSettings: readStored(ACTIVE_SETTINGS_KEY, {}),
             }),
           });
         } catch (err) {
@@ -1888,7 +1896,9 @@
         return !!cfg && ((cfg.favorites && cfg.favorites.length)
           || (cfg.presets && Object.keys(cfg.presets).length)
           || (cfg.watched && cfg.watched.length)
-          || (cfg.indicatorOrder && cfg.indicatorOrder.length));
+          || (cfg.indicatorOrder && cfg.indicatorOrder.length)
+          || (cfg.archived && cfg.archived.length)
+          || (cfg.activeSettings && Object.keys(cfg.activeSettings).length));
       }
 
       // Beim Öffnen: Server-Stand in den localStorage spiegeln (Server gewinnt).
@@ -1902,6 +1912,8 @@
             if (cfg.presets && typeof cfg.presets === 'object') localStorage.setItem(PRESETS_KEY, JSON.stringify(cfg.presets));
             if (Array.isArray(cfg.watched)) localStorage.setItem(WATCHED_FILTERS_KEY, JSON.stringify(cfg.watched));
             if (Array.isArray(cfg.indicatorOrder)) localStorage.setItem(INDICATOR_ORDER_KEY, JSON.stringify(cfg.indicatorOrder));
+            if (Array.isArray(cfg.archived)) localStorage.setItem(ARCHIVED_INDICATORS_KEY, JSON.stringify(cfg.archived));
+            if (cfg.activeSettings && typeof cfg.activeSettings === 'object') localStorage.setItem(ACTIVE_SETTINGS_KEY, JSON.stringify(cfg.activeSettings));
           } else {
             await pushConfig();
           }

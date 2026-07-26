@@ -83,7 +83,12 @@
       "Bash(taskkill //PID 3192 //F)",
       "Bash(taskkill //PID 12252 //F)",
       "Bash(node verify_fill.js)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('server.py',encoding='utf-8'\\).read\\(\\)\\); print\\('server.py OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('server.py',encoding='utf-8'\\).read\\(\\)\\); print\\('server.py OK'\\)\")",
+      "Bash(AKTIENANALYSE_PORT=8123 python server.py)",
+      "Bash(curl -s -X POST http://127.0.0.1:8123/api/config -H \"Content-Type: application/json\" -d '{\"favorites\":[{\"symbol\":\"TEST\",\"name\":\"Test\"}],\"presets\":{},\"watched\":[],\"indicatorOrder\":[\"rsi\"],\"archived\":[\"macd\"],\"activeSettings\":{\"useRsi\":true,\"rsiBuy\":42}}')",
+      "Bash(curl -s http://127.0.0.1:8123/api/config)",
+      "Bash(kill %1)",
+      "Bash(jobs -l)"
     ]
   }
 }
