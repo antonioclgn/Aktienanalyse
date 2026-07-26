@@ -661,6 +661,35 @@ def _smartdumb_signals(ctx, s):
     return _threshold_signals(ctx["sd"], lambda v: v >= s["smartDumbBuy"], lambda v: v <= s["smartDumbSell"])
 
 
+def sd_change_series(sd_times, sd_spreads, timestamps, weeks):
+    """Veränderung des Smart/Dumb-Spreads über `weeks` COT-WOCHEN, je Kerze.
+
+    Gerechnet wird bewusst auf der wöchentlichen Rohreihe und NICHT über Kerzen: die
+    COT-Daten kommen nur einmal pro Woche und werden auf die Kerzen vorwärts-aufgefüllt.
+    Eine Differenz über Kerzen wäre bei Tageskerzen an 4 von 5 Tagen 0 und im Tages-Chart
+    (5-Minuten-Kerzen) immer 0. Also je Kerze den zugehörigen Wochenbericht suchen und von
+    dort `weeks` Berichte zurückgehen. Am Anfang der Historie fehlt der Vergleichswert
+    -> None (wie der Warmup der anderen Indikatoren)."""
+    weeks = max(1, int(weeks))
+    values = []
+    for t in timestamps:
+        index = bisect.bisect_right(sd_times, t) - 1
+        values.append(
+            sd_spreads[index] - sd_spreads[index - weeks] if index - weeks >= 0 else None
+        )
+    return values
+
+
+def _sdchange_signals(ctx, s):
+    """Starker Anstieg des Spreads = Profis steigen ein und/oder Kleinanleger steigen aus.
+    Schlägt auch dann an, wenn das NIVEAU niedrig bleibt (z.B. Zollcrash 2025: Spread stieg
+    in 4 Wochen von -71 auf -3, blieb aber weit unter der Kaufschwelle des Niveau-Filters)."""
+    values = sd_change_series(
+        ctx["sd_times"], ctx["sd_spreads"], ctx["timestamps"], s.get("sdChangeWeeks", 4)
+    )
+    return _threshold_signals(values, lambda v: v >= s["sdChangeBuy"], lambda v: v <= s["sdChangeSell"])
+
+
 def _rsi_signals(ctx, s):
     return _threshold_signals(ctx["rsi"], lambda v: v <= s["rsiBuy"], lambda v: v >= s["rsiSell"])
 
@@ -712,6 +741,10 @@ INDICATORS = [
      "buy_key": "macdForBuy", "sell_key": "macdForSell",
      "defaults": {"useMacd": False, "macdBuy": 0, "macdSell": 0,
                   "macdForBuy": True, "macdForSell": True}},
+    {"key": "sdchange", "enabled_key": "useSdChange", "signals": _sdchange_signals,
+     "buy_key": "sdChangeForBuy", "sell_key": "sdChangeForSell",
+     "defaults": {"useSdChange": False, "sdChangeWeeks": 4, "sdChangeBuy": 50, "sdChangeSell": -50,
+                  "sdChangeForBuy": True, "sdChangeForSell": True}},
 ]
 
 # Aus der Registry abgeleitet — nicht von Hand pflegen. Muss zu index.html passen.
@@ -841,13 +874,20 @@ def cumulative_trend(series):
 
 def _indicator_context(data, timestamps, fg_times, fg_scores, sd_times, sd_spreads):
     """Alle Reihen, die die Indikator-Signalfunktionen brauchen, einmal vorberechnet
-    (pro Kerze) — Fear & Greed / Smart-Dumb vorwärts-aufgefüllt, RSI/Abweichung direkt."""
+    (pro Kerze) — Fear & Greed / Smart-Dumb vorwärts-aufgefüllt, RSI/Abweichung direkt.
+
+    Die COT-Rohreihe (sd_times/sd_spreads, WÖCHENTLICH) kommt zusätzlich unverändert mit:
+    _sdchange_signals braucht sie, weil seine Fensterlänge eine Einstellung ist und hier
+    noch nicht bekannt ist — gerechnet wird dort auf Wochen, nicht auf Kerzen."""
     rsi_all = data.get("rsi") or []
     price_vs_ma = data.get("priceVsMaPct") or []
     macd_all = data.get("macd") or []
     macd_signal_all = data.get("macdSignal") or []
     count = len(timestamps)
     return {
+        "timestamps": timestamps,
+        "sd_times": sd_times,
+        "sd_spreads": sd_spreads,
         "fg": [forward_filled(fg_times, fg_scores, t) for t in timestamps],
         "sd": [forward_filled(sd_times, sd_spreads, t) for t in timestamps],
         "rsi": [rsi_all[i] if i < len(rsi_all) else None for i in range(count)],

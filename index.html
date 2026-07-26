@@ -344,6 +344,56 @@
             };
           },
         },
+        {
+          key: 'sdchange', enabledKey: 'useSdChange', title: 'Smart/Dumb Veränderung',
+          buyKey: 'sdChangeForBuy', sellKey: 'sdChangeForSell',
+          chartId: 'sdchange-chart', currentId: 'sdchange-chart-current',
+          defaults: { useSdChange: false, sdChangeWeeks: 4, sdChangeBuy: 50, sdChangeSell: -50,
+                      sdChangeForBuy: true, sdChangeForSell: true },
+          settings: {
+            toggleLabel: 'Smart/Dumb-Veränderung berücksichtigen',
+            hint: 'Nicht das Niveau, sondern der Sprung des Spreads: schlägt auch an, wenn der '
+              + 'Wert niedrig bleibt (Zollcrash 2025: −71 → −3 = +69). Standard: 4 Wochen, ±50.',
+            rows: [
+              { block: true, field: { key: 'sdChangeWeeks', before: 'Veränderung über ',
+                                      after: ' Wochen', min: 1, max: 52, step: 1 } },
+              { fields: [
+                { key: 'sdChangeBuy', before: 'kaufen ≥ ', min: -200, max: 200, step: 1 },
+                { key: 'sdChangeSell', before: 'verkaufen ≤ ', min: -200, max: 200, step: 1 },
+              ] },
+            ],
+          },
+          ready: () => smartDumbHistory.length > 0,
+          build: (ctx, s) => {
+            const change = ctx.timestamps.map(t => smartDumbChangeAt(t, s.sdChangeWeeks));
+            // Die Veränderung hat keine feste Skala (real bisher −135 bis +171). Grenzen
+            // deshalb aus den Werten UND den Schwellen bilden — sonst zeichnet
+            // renderIndicatorChart eine Referenzlinie außerhalb des Bereichs stillschweigend
+            // nicht (vgl. MACD oben).
+            const shown = change.filter(v => v != null);
+            const bounds = [...shown, s.sdChangeBuy, s.sdChangeSell];
+            const last = lastValue(change);
+            // Endpunkte des Fensters mit anzeigen: macht sichtbar, woher der Sprung kommt.
+            const lastTs = ctx.timestamps[ctx.timestamps.length - 1];
+            const nowIdx = smartDumbIndexAt(lastTs);
+            const thenIdx = nowIdx - Math.max(1, Math.round(s.sdChangeWeeks));
+            return {
+              series: change,
+              signals: change.map(v => (v == null ? null : sig(v >= s.sdChangeBuy, v <= s.sdChangeSell))),
+              chart: {
+                fixedMin: bounds.length ? Math.min(...bounds) : undefined,
+                fixedMax: bounds.length ? Math.max(...bounds) : undefined,
+                signedArea: true, color: '#888',
+                formatValue: v => `${v > 0 ? '+' : ''}${v.toFixed(0)}`,
+                referenceLines: [{ value: 0, stroke: '#ddd', dashed: false }, s.sdChangeBuy, s.sdChangeSell],
+              },
+              currentText: (last != null && thenIdx >= 0)
+                ? `${last > 0 ? '+' : ''}${last.toFixed(1)} in ${Math.max(1, Math.round(s.sdChangeWeeks))} Wochen`
+                  + ` (${smartDumbHistory[thenIdx].spread.toFixed(0)} → ${smartDumbHistory[nowIdx].spread.toFixed(0)})`
+                : '',
+            };
+          },
+        },
       ];
 
       // Alles Weitere aus der Registry abgeleitet — nicht von Hand pflegen.
@@ -1048,6 +1098,34 @@
           }
         }
         return result;
+      }
+
+      // Index des zuletzt gültigen COT-Berichts zu einem Zeitpunkt (-1 = keiner).
+      function smartDumbIndexAt(ts) {
+        let lo = 0, hi = smartDumbHistory.length - 1, index = -1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (smartDumbHistory[mid].t <= ts) {
+            index = mid;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        return index;
+      }
+
+      // Veränderung des Spreads über `weeks` COT-WOCHEN. Spiegelt sd_change_series()
+      // in server.py — bewusst über die Wochenreihe und NICHT über Kerzen: die COT-Daten
+      // kommen nur wöchentlich und werden auf die Kerzen vorwärts-aufgefüllt. Eine
+      // Differenz über Kerzen wäre bei Tageskerzen an 4 von 5 Tagen 0 und im Tages-Chart
+      // (5-Minuten-Kerzen) immer 0. Am Anfang der Historie fehlt der Vergleichswert -> null.
+      function smartDumbChangeAt(ts, weeks) {
+        const span = Math.max(1, Math.round(weeks));
+        const index = smartDumbIndexAt(ts);
+        return index - span >= 0
+          ? smartDumbHistory[index].spread - smartDumbHistory[index - span].spread
+          : null;
       }
 
       // Baut für JEDEN Indikator Wert- und Signal-Reihe (plus Chart-/Text-Infos).
