@@ -831,7 +831,7 @@
         });
       }
 
-      function renderChart(closes, timestamps, rangeKey, movingAverage, sharedPadLeft, highlightRanges) {
+      function renderChart(closes, timestamps, rangeKey, overlays, sharedPadLeft, highlightRanges) {
         const svg = document.getElementById('chart');
         svg.innerHTML = '';
         if (!closes || closes.length < 2) return;
@@ -885,20 +885,35 @@
         polyline.setAttribute('stroke-width', '2');
         svg.appendChild(polyline);
 
-        if (movingAverage) {
-          const maPoints = closes
-            .map((_, i) => (movingAverage[i] != null ? `${xAt(i)},${yAt(movingAverage[i])}` : null))
+        // Overlay-Linien (z.B. 50er-/200er-EMA) über die Kurslinie legen.
+        const drawnOverlays = [];
+        (overlays || []).forEach(overlay => {
+          const series = overlay.series;
+          if (!series || series.length !== closes.length) return;
+          const linePoints = series
+            .map((v, i) => (v != null ? `${xAt(i)},${yAt(v)}` : null))
             .filter(p => p !== null)
             .join(' ');
-          if (maPoints) {
-            const maLine = document.createElementNS(ns, 'polyline');
-            maLine.setAttribute('points', maPoints);
-            maLine.setAttribute('fill', 'none');
-            maLine.setAttribute('stroke', 'orange');
-            maLine.setAttribute('stroke-width', '2');
-            svg.appendChild(maLine);
-          }
-        }
+          if (!linePoints) return;
+          const line = document.createElementNS(ns, 'polyline');
+          line.setAttribute('points', linePoints);
+          line.setAttribute('fill', 'none');
+          line.setAttribute('stroke', overlay.color || 'orange');
+          line.setAttribute('stroke-width', '2');
+          svg.appendChild(line);
+          if (overlay.label) drawnOverlays.push(overlay);
+        });
+
+        // Kleine Legende oben links, damit die Linien unterscheidbar sind.
+        drawnOverlays.forEach((overlay, i) => {
+          const legend = document.createElementNS(ns, 'text');
+          legend.setAttribute('x', padLeft + 4);
+          legend.setAttribute('y', padTop + 10 + i * 12);
+          legend.setAttribute('fill', overlay.color || 'orange');
+          legend.setAttribute('font-size', '9');
+          legend.textContent = overlay.label;
+          svg.appendChild(legend);
+        });
 
         if (timestamps && timestamps.length === closes.length) {
           const tickCount = Math.min(6, timestamps.length);
@@ -1149,7 +1164,10 @@
         const tradingDays = tradingDaysFromTimestamps(data.timestamps, currentRange);
         const highlightRanges = applyMinDelay(rawRanges, data.timestamps, currentWatchDelayDays(), tradingDays);
 
-        renderChart(data.closes, data.timestamps, currentRange, data.movingAverage, sharedChartPadLeft, highlightRanges);
+        renderChart(data.closes, data.timestamps, currentRange, [
+          { series: data.ema50, color: '#f59e0b', label: '50 EMA' },
+          { series: data.ema200, color: '#8b5cf6', label: '200 EMA' },
+        ], sharedChartPadLeft, highlightRanges);
 
         // Jeden Indikator-Chart aus seinem build()-Ergebnis zeichnen. Archivierte
         // Indikatoren haben kein Chart-Grundgerüst (siehe renderIndicatorChartSkeletons)

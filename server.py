@@ -237,6 +237,9 @@ TRADING_DAYS_PER_WEEK = 5
 MA_WINDOW_DEFAULT = 200          # Linie im Kurschart
 MA_DEVIATION_WINDOW_DEFAULT = 150  # Bezug für die Moving Average Deviation
 MA_WINDOW_MIN, MA_WINDOW_MAX = 5, 400
+# Zwei feste EMA-Linien im oberen Kurschart (unabhängig vom MAD-Fenster).
+EMA_SHORT_PERIOD = 50
+EMA_LONG_PERIOD = 200
 
 # Bei diesen (untertägigen) Intervallen reicht die eigene Historie nie für einen
 # 200-Tage-Durchschnitt. Stattdessen wird er separat aus Tageskursen berechnet und
@@ -342,6 +345,54 @@ def moving_average_for_window(days, interval, symbol, all_closes, all_timestamps
     return compute_moving_average(all_closes, bars)
 
 
+def get_daily_ema_by_date(symbol, period):
+    """Wie get_daily_moving_average_by_date, aber EMA statt SMA. Für untertägige
+    Intervalle, deren eigene Historie nie für einen 200-Perioden-EMA reicht."""
+    period2 = int(time.time())
+    period1 = period2 - MA_DAILY_LOOKBACK_DAYS * 86400
+    url = YAHOO_CHART_URL_PERIOD.format(
+        symbol=quote(symbol, safe=""), period1=period1, period2=period2, interval="1d"
+    )
+    data = fetch_json(url)
+    result = data["chart"]["result"][0]
+    timestamps = result.get("timestamp", [])
+    closes = result["indicators"]["quote"][0]["close"]
+
+    points = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
+    daily_timestamps = [p[0] for p in points]
+    daily_closes = [p[1] for p in points]
+    ema_series = compute_ema_series(daily_closes, period)
+
+    return {
+        time.strftime("%Y-%m-%d", time.gmtime(t)): ema
+        for t, ema in zip(daily_timestamps, ema_series)
+        if ema is not None
+    }
+
+
+def ema_for_window(days, interval, symbol, all_closes, all_timestamps):
+    """Exponentieller gleitender Durchschnitt über `days` Handelstage, passend zum
+    Kerzenintervall — spiegelt moving_average_for_window."""
+    if interval in INTRADAY_INTERVALS:
+        # Untertägig aus Tageskursen berechnen und pro Kalendertag übertragen.
+        by_date = cached(
+            ("daily_ema", symbol, days), CACHE_TTL_SECONDS,
+            lambda: get_daily_ema_by_date(symbol, days),
+        )
+        sorted_dates = sorted(by_date)
+        series = []
+        for t in all_timestamps:
+            date_key = time.strftime("%Y-%m-%d", time.gmtime(t))
+            idx = bisect.bisect_right(sorted_dates, date_key) - 1
+            series.append(by_date[sorted_dates[idx]] if idx >= 0 else None)
+        return series
+
+    bars = days
+    if interval == "1wk":
+        bars = max(1, round(days / TRADING_DAYS_PER_WEEK))
+    return compute_ema_series(all_closes, bars)
+
+
 def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
     if range_key not in CHART_RANGES:
         range_key = DEFAULT_CHART_RANGE
@@ -372,6 +423,10 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
     moving_average = moving_average_for_window(
         ma_window, interval, symbol, all_closes, all_timestamps
     )
+
+    # Zwei feste EMA-Linien für den oberen Kurschart (unabhängig vom MAD-Fenster).
+    ema_short = ema_for_window(EMA_SHORT_PERIOD, interval, symbol, all_closes, all_timestamps)
+    ema_long = ema_for_window(EMA_LONG_PERIOD, interval, symbol, all_closes, all_timestamps)
 
     rsi_series = compute_rsi_series(all_closes, 14)
     macd_line, macd_signal_line = compute_macd_series(all_closes)
@@ -406,6 +461,8 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
         "timestamps": all_timestamps[start_index:],
         "closes": all_closes[start_index:],
         "movingAverage": moving_average[start_index:],
+        "ema50": ema_short[start_index:],
+        "ema200": ema_long[start_index:],
         "maWindow": ma_window,
         "rsi": rsi_series[start_index:],
         "macd": macd_line[start_index:],
