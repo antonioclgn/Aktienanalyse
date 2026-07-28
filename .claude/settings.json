@@ -112,7 +112,26 @@
       "Bash(python -c \"import ast,sys; ast.parse\\(open\\('server.py',encoding='utf-8'\\).read\\(\\)\\); print\\('server.py OK'\\)\")",
       "Bash(AKTIENANALYSE_PORT=8765 python server.py)",
       "Bash('/c/Program Files/Google/Chrome/Application/chrome.exe' --headless --disable-gpu --no-sandbox --user-data-dir=C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/e1ea5338-4aea-4124-9f48-8bcf58437e8c/scratchpad/profile --virtual-time-budget=8000 --dump-dom http://127.0.0.1:8765/)",
-      "Bash(taskkill //FI \"WINDOWTITLE eq *\" //F //IM python.exe)"
+      "Bash(taskkill //FI \"WINDOWTITLE eq *\" //F //IM python.exe)",
+      "Bash(python -c \"import ast,sys; ast.parse\\(open\\('server.py',encoding='utf-8'\\).read\\(\\)\\); print\\('server.py: Syntax ok'\\)\")",
+      "Bash(set -e)",
+      "Bash(rm -rf __TRACKED_VAR__/app)",
+      "Bash(mkdir -p __TRACKED_VAR__/app/data)",
+      "Bash(cp c:/Users/anton/programmierung/Aktienanalyse/server.py __TRACKED_VAR__/app/)",
+      "Bash(cp c:/Users/anton/programmierung/Aktienanalyse/index.html __TRACKED_VAR__/app/)",
+      "Bash(curl -s -m 5 http://127.0.0.1:8123/api/config)",
+      "Bash(node --check \"C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/902d7834-014a-47bb-b2b2-40fd1df6ca3d/scratchpad/page.mjs\")",
+      "Bash(rm -rf C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/902d7834-014a-47bb-b2b2-40fd1df6ca3d/scratchpad/race)",
+      "Bash(mkdir -p C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/902d7834-014a-47bb-b2b2-40fd1df6ca3d/scratchpad/race/data)",
+      "Bash(cp c:/Users/anton/programmierung/Aktienanalyse/server.py C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/902d7834-014a-47bb-b2b2-40fd1df6ca3d/scratchpad/race/)",
+      "Bash(cp c:/Users/anton/programmierung/Aktienanalyse/feargreed_history_2011_2021.csv C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/902d7834-014a-47bb-b2b2-40fd1df6ca3d/scratchpad/race/)",
+      "Bash(AKTIENANALYSE_PORT=8124 python server.py)",
+      "Bash(curl -s -m 8 http://127.0.0.1:8124/api/config)",
+      "Bash(curl -s -m 8 -X POST http://127.0.0.1:8124/api/config -H 'Content-Type: application/json' -d '{\"favorites\":[{\"symbol\":\"AAA\",\"name\":\"Test AG\"}],\"presets\":{\"F\":{\"useRsi\":true}},\"watched\":[{\"name\":\"F\",\"ranges\":[\"1y\"]}],\"baseUpdated\":0}')",
+      "Bash('/c/Program Files/Google/Chrome/Application/chrome.exe' --headless=new --disable-gpu --no-sandbox --user-data-dir=C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/902d7834-014a-47bb-b2b2-40fd1df6ca3d/scratchpad/prof-live --virtual-time-budget=10000 --dump-dom http://127.0.0.1:8123/)",
+      "Bash(node --check C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/902d7834-014a-47bb-b2b2-40fd1df6ca3d/scratchpad/page.mjs)",
+      "Bash(cp c:/Users/anton/programmierung/Aktienanalyse/index.html C:/Users/anton/AppData/Local/Temp/claude/c--Users-anton-programmierung-Aktienanalyse/902d7834-014a-47bb-b2b2-40fd1df6ca3d/scratchpad/app/index.html)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 8123,8124 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue; \"beendet: PID $_\" })"
     ]
   }
 }

@@ -1616,19 +1616,44 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 self._send_json({"error": "ungültige Daten"}, status=400)
                 return
-            config = {
-                "favorites": payload.get("favorites") or [],
-                "presets": payload.get("presets") or {},
-                "presetOrder": payload.get("presetOrder") or [],
-                "watched": payload.get("watched") or [],
-                "indicatorOrder": payload.get("indicatorOrder") or [],
-                "archived": payload.get("archived") or [],
-                "activeSettings": payload.get("activeSettings") or {},
-                "updated": int(time.time()),
-            }
-            write_json_file(CONFIG_FILE, config)
-            write_json_file(WATCHLIST_FILE, derive_watchlist(config))
-            self._send_json({"ok": True})
+            # Ein Browser lädt immer den GANZEN Stand hoch. Ohne Prüfung überschreibt ein
+            # Gerät mit veralteter Kopie (zweiter Tab, anderes Gerät, Seite beim Laden
+            # unterbrochen) einfach den neueren Stand — so sind schon abgewählte
+            # Zeitfenster wieder in die Überwachung geraten und haben Meldungen ausgelöst,
+            # die auf der Seite gar nicht mehr eingestellt waren.
+            #
+            # Deshalb schickt der Browser mit, auf welchem Stand seine Änderung aufbaut
+            # ("baseUpdated", der zuletzt von hier gesehene Zeitstempel). Ist der
+            # gespeicherte Stand neuer, wird abgelehnt (409) und der aktuelle Stand
+            # zurückgegeben; der Browser übernimmt ihn dann. Fehlt das Feld, gilt 0 —
+            # ein Browser ohne dieses Feld kann also keine bestehende Config mehr
+            # überschreiben, nur eine noch leere befüllen.
+            base = payload.get("baseUpdated")
+            if not isinstance(base, (int, float)) or isinstance(base, bool):
+                base = 0
+            with _file_lock:
+                stored = read_json_file(CONFIG_FILE, {}) or {}
+                stored_updated = stored.get("updated") or 0
+                if stored_updated > base:
+                    self._send_json(
+                        {"error": "veralteter Stand", "config": stored}, status=409
+                    )
+                    return
+                config = {
+                    "favorites": payload.get("favorites") or [],
+                    "presets": payload.get("presets") or {},
+                    "presetOrder": payload.get("presetOrder") or [],
+                    "watched": payload.get("watched") or [],
+                    "indicatorOrder": payload.get("indicatorOrder") or [],
+                    "archived": payload.get("archived") or [],
+                    "activeSettings": payload.get("activeSettings") or {},
+                    # Muss streng steigen, sonst wären zwei Uploads in derselben Sekunde
+                    # nicht unterscheidbar und einer davon käme unbemerkt durch.
+                    "updated": max(stored_updated + 1, int(time.time())),
+                }
+                write_json_file(CONFIG_FILE, config)
+                write_json_file(WATCHLIST_FILE, derive_watchlist(config))
+            self._send_json({"ok": True, "updated": config["updated"]})
             return
 
         # (Alt-Endpunkt, von der Seite nicht mehr genutzt: direkte Watchlist.)

@@ -135,6 +135,10 @@
           <div id="watch-symbol-hint" style="margin-top: 3px; color: #999;"></div>
         </div>
         <div id="watched-filters" style="color: #666; font-size: 11px; margin-bottom: 8px;"></div>
+        <!-- Warnt, wenn der Server etwas anderes überwacht als hier steht
+             (checkWatchlistDivergence) oder ein anderes Gerät schneller war. Ohne das
+             bleibt ein Auseinanderlaufen unsichtbar, bis eine unerwartete Mail kommt. -->
+        <div id="config-sync-hint" style="color: #b45309; font-size: 11px; margin-bottom: 8px;"></div>
         <!-- Einstellungen je Indikator werden aus der Registry erzeugt (renderIndicatorSettings). -->
         <div id="indicator-settings"></div>
       </section>
@@ -2330,9 +2334,29 @@
       // aktiven Einstellungen.
       // Bei jeder Änderung wird der gesamte Stand hochgeladen; daraus leitet der
       // Server auch die Watchlist für die Überwachung ab.
-      async function pushConfig() {
+      // Zwei Sperren verhindern, dass ein veralteter Browser-Stand den Server zurücksetzt
+      // (genau so kamen Meldungen für ein Zeitfenster, das hier längst abgewählt war):
+      //  - configReady: vor dem ersten Abgleich mit dem Server wird NICHTS hochgeladen.
+      //    Beim Öffnen über einen Link aus einer Meldungs-Mail stößt applyDeepLink sonst
+      //    einen Upload an, der das Rennen gegen die Server-Antwort gewinnen kann — der
+      //    alte Stand dieses Geräts landet dann auf dem Server.
+      //  - configBaseUpdated: der Server-Stand, auf dem die eigene Änderung aufbaut. Ist
+      //    der Server inzwischen weiter (anderes Gerät), lehnt er mit 409 ab.
+      let configReady = false;
+      let configBaseUpdated = 0;
+      // Uploads streng nacheinander: sonst gingen zwei Änderungen kurz hintereinander mit
+      // demselben configBaseUpdated raus und die zweite käme unnötig als Konflikt zurück.
+      let configPushChain = Promise.resolve();
+
+      function pushConfig() {
+        configPushChain = configPushChain.catch(() => {}).then(sendConfig);
+        return configPushChain;
+      }
+
+      async function sendConfig() {
+        if (!configReady) return;
         try {
-          await fetch('/api/config', {
+          const res = await fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -2343,11 +2367,55 @@
               indicatorOrder: loadIndicatorOrder(),
               archived: [...loadArchivedIndicators()],
               activeSettings: readStored(ACTIVE_SETTINGS_KEY, {}),
+              baseUpdated: configBaseUpdated,
             }),
           });
+          const data = await res.json().catch(() => null);
+          if (res.status === 409) {
+            // Ein anderes Gerät war schneller. Dessen Stand gewinnt — ihn zu überschreiben
+            // wäre genau das Zurückrollen, das hier verhindert werden soll.
+            adoptServerConfig(data && data.config);
+            loadHighlightSettings();   // zeichnet Filter-Menü und Überwachungs-UI neu
+            renderFavorites();
+            showConfigSyncHint('Ein anderes Gerät hatte einen neueren Stand. Die Einstellungen '
+              + 'wurden neu geladen — bitte die letzte Änderung noch einmal vornehmen.', 'conflict');
+            setTimeout(() => clearConfigSyncHint('conflict'), 15000);
+            return;
+          }
+          if (data && data.updated) configBaseUpdated = data.updated;
         } catch (err) {
           console.error(err);
         }
+      }
+
+      // Server-Stand in den localStorage spiegeln. Das Neuzeichnen macht der Aufrufer,
+      // weil sich der passende Umfang zwischen Seitenstart und Konflikt unterscheidet.
+      function adoptServerConfig(cfg) {
+        if (!cfg || typeof cfg !== 'object') return;
+        if (Array.isArray(cfg.favorites)) localStorage.setItem(FAVORITES_KEY, JSON.stringify(cfg.favorites));
+        if (cfg.presets && typeof cfg.presets === 'object') localStorage.setItem(PRESETS_KEY, JSON.stringify(cfg.presets));
+        if (Array.isArray(cfg.presetOrder)) localStorage.setItem(PRESET_ORDER_KEY, JSON.stringify(cfg.presetOrder));
+        if (Array.isArray(cfg.watched)) localStorage.setItem(WATCHED_FILTERS_KEY, JSON.stringify(cfg.watched));
+        if (Array.isArray(cfg.indicatorOrder)) localStorage.setItem(INDICATOR_ORDER_KEY, JSON.stringify(cfg.indicatorOrder));
+        if (Array.isArray(cfg.archived)) localStorage.setItem(ARCHIVED_INDICATORS_KEY, JSON.stringify(cfg.archived));
+        if (cfg.activeSettings && typeof cfg.activeSettings === 'object') localStorage.setItem(ACTIVE_SETTINGS_KEY, JSON.stringify(cfg.activeSettings));
+        configBaseUpdated = cfg.updated || 0;
+      }
+
+      // Hinweiszeile unter den überwachten Filtern. `source` verhindert, dass sich die
+      // beiden Melder gegenseitig löschen: der Konflikt-Hinweis verschwindet von selbst,
+      // der Abweichungs-Hinweis erst, wenn die Abweichung wirklich weg ist.
+      let configHintSource = null;
+
+      function showConfigSyncHint(text, source) {
+        configHintSource = source;
+        document.getElementById('config-sync-hint').textContent = text;
+      }
+
+      function clearConfigSyncHint(source) {
+        if (configHintSource !== source) return;
+        configHintSource = null;
+        document.getElementById('config-sync-hint').textContent = '';
       }
 
       function configHasData(cfg) {
@@ -2367,20 +2435,45 @@
         try {
           const cfg = await (await fetch('/api/config')).json();
           if (configHasData(cfg)) {
-            if (Array.isArray(cfg.favorites)) localStorage.setItem(FAVORITES_KEY, JSON.stringify(cfg.favorites));
-            if (cfg.presets && typeof cfg.presets === 'object') localStorage.setItem(PRESETS_KEY, JSON.stringify(cfg.presets));
-            if (Array.isArray(cfg.presetOrder)) localStorage.setItem(PRESET_ORDER_KEY, JSON.stringify(cfg.presetOrder));
-            if (Array.isArray(cfg.watched)) localStorage.setItem(WATCHED_FILTERS_KEY, JSON.stringify(cfg.watched));
-            if (Array.isArray(cfg.indicatorOrder)) localStorage.setItem(INDICATOR_ORDER_KEY, JSON.stringify(cfg.indicatorOrder));
-            if (Array.isArray(cfg.archived)) localStorage.setItem(ARCHIVED_INDICATORS_KEY, JSON.stringify(cfg.archived));
-            if (cfg.activeSettings && typeof cfg.activeSettings === 'object') localStorage.setItem(ACTIVE_SETTINGS_KEY, JSON.stringify(cfg.activeSettings));
+            adoptServerConfig(cfg);
           } else {
+            // Server noch leer: dieses Gerät darf säen. configReady muss dafür schon
+            // stehen, sonst schluckt die Sperre den Upload.
+            configReady = true;
             await pushConfig();
           }
         } catch (err) {
-          // Server nicht erreichbar -> mit dem lokalen Stand weiterarbeiten.
+          // Server nicht erreichbar -> mit dem lokalen Stand weiterarbeiten. Hochladen
+          // ist trotzdem erlaubt: der Stand baut dann auf 0 auf, und sobald der Server
+          // wieder da ist, lehnt er mit 409 ab, statt sich überschreiben zu lassen.
           console.error(err);
+        } finally {
+          configReady = true;
         }
+      }
+
+      // Gemeldet wird nach der Watchlist des SERVERS, angezeigt wird der localStorage.
+      // Solange beide gleich sind, fällt eine Abweichung nie auf — deshalb hier der
+      // Abgleich bei jedem Abruf der Glocke. Verglichen werden Name und Zeitfenster,
+      // weil genau die bestimmen, wofür eine Mail rausgeht.
+      function watchlistFingerprint(filters) {
+        return (filters || [])
+          .filter(f => f && f.name)
+          .map(f => `${f.name} (${(f.ranges || []).map(r => RANGE_LABELS[r] || r).sort().join(', ')})`)
+          .sort()
+          .join('; ');
+      }
+
+      function checkWatchlistDivergence(serverWatchlist) {
+        const here = watchlistFingerprint(watchedFilters());
+        const there = watchlistFingerprint(serverWatchlist && serverWatchlist.filters);
+        if (here === there) {
+          clearConfigSyncHint('watchlist');
+          return;
+        }
+        showConfigSyncHint('Achtung: Der Server überwacht gerade etwas anderes als hier steht. '
+          + `Server: ${there || '(nichts)'}. Eine Änderung an der Überwachung gleicht ab.`,
+          'watchlist');
       }
 
       async function requestCheck() {
@@ -2402,6 +2495,7 @@
             intervalSeconds: data.intervalSeconds || serverInfo.intervalSeconds,
             mailStatus: data.mailStatus || null,
           };
+          checkWatchlistDivergence(data.watchlist);
           document.getElementById('notifications-status').textContent = '';
         } catch (err) {
           // Ohne laufenden Server gibt es keine Überwachung — das gehört sichtbar gemacht.
