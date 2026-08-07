@@ -77,6 +77,9 @@
         <div style="text-align: right;">
           <div id="range-change"></div>
           <div id="current-price" style="font-size: 11px; color: #666;"></div>
+          <!-- Von welcher Börse der letzte Kurs stammt und wie alt er ist. Morgens ist
+               das ein deutscher Platz, ab 10:00 die Vorbörse der Heimatbörse. -->
+          <div id="quote-source" style="font-size: 10px; color: #999;"></div>
         </div>
       </div>
       <svg id="chart" viewBox="0 0 600 220" style="width: 100%; height: auto; display: block;"></svg>
@@ -1799,12 +1802,41 @@
           }
 
           document.getElementById('current-price').textContent =
-            closes && closes.length ? closes[closes.length - 1].toFixed(2) : '';
+            closes && closes.length
+              ? `${closes[closes.length - 1].toFixed(2)} ${data.currency || ''}`.trim()
+              : '';
+          renderQuoteSource(data.quote, data.timestamps);
         } catch (err) {
           document.getElementById('range-change').textContent = 'Fehler';
           document.getElementById('current-price').textContent = '';
+          document.getElementById('quote-source').textContent = '';
           console.error(err);
         }
+      }
+
+      // Herkunft und Alter des letzten Kurses. Wichtig, weil der Kurs morgens von einer
+      // anderen Börse kommt als nachmittags: ohne diese Zeile wäre nicht zu sehen, ob
+      // gerade jemand handelt oder ob da noch der Schlusskurs von gestern steht.
+      function renderQuoteSource(quote, timestamps) {
+        const el = document.getElementById('quote-source');
+        if (!el) return;
+        const clock = ts => new Date(ts * 1000)
+          .toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+        if (quote) {
+          el.textContent = `${quote.venueName} · ${clock(quote.ts)}`;
+          return;
+        }
+        // Handelt gerade nirgends jemand (nachts, Wochenende, Feiertag), steht hier der
+        // Schluss, auf dem der Chart endet — damit ein alter Kurs als solcher erkennbar
+        // ist und nicht wie ein aktueller aussieht.
+        if (timestamps && timestamps.length) {
+          const last = timestamps[timestamps.length - 1];
+          const day = new Date(last * 1000)
+            .toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+          el.textContent = `Schlusskurs · ${day} ${clock(last)}`;
+          return;
+        }
+        el.textContent = '';
       }
 
       async function loadData(symbol) {
@@ -2098,6 +2130,11 @@
       const WATCHED_FILTERS_KEY = 'aktienanalyse-watched-filters';
       const DEFAULT_ALERT_RANGE = '1y';
       const NOTIFICATION_POLL_MS = 60 * 1000;
+      // Kurs und Chart nachladen, solange die Seite sichtbar ist. Ohne das steht der
+      // Chart auf dem Stand des Seitenaufrufs — man sieht eine Bewegung erst nach einem
+      // manuellen Neuladen. Serverseitig sind die Daten 30 Sekunden gecacht, eine Minute
+      // erzeugt also keine zusätzlichen Yahoo-Abrufe.
+      const CHART_POLL_MS = 60 * 1000;
       const SIGNAL_LABELS = { green: 'Kaufsignal', red: 'Verkaufssignal' };
       const RANGE_LABELS = {
         '1d': 'Tag', '5d': 'Woche', '1mo': 'Monat',
@@ -2740,6 +2777,17 @@
         loadData(currentSymbol);
         loadChart(currentSymbol, currentRange);
         setInterval(refreshNotifications, NOTIFICATION_POLL_MS);
+
+        // Im Hintergrund nicht pollen (das Handy lässt Tabs ohnehin schlafen), dafür
+        // beim Zurückkehren sofort aktualisieren — sonst schaut man nach Stunden auf
+        // einen alten Kurs, ohne dass es auffällt.
+        function refreshQuotes() {
+          if (document.visibilityState !== 'visible') return;
+          loadData(currentSymbol);
+          loadChart(currentSymbol, currentRange);
+        }
+        setInterval(refreshQuotes, CHART_POLL_MS);
+        document.addEventListener('visibilitychange', refreshQuotes);
       })();
     </script>
 </body>

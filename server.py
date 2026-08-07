@@ -40,6 +40,7 @@ NOTIFICATIONS_FILE = DATA_DIR / "notifications.json"
 ALERT_STATE_FILE = DATA_DIR / "alert_state.json"   # zuletzt gemeldeter Zustand je Filter+Wert
 MAIL_CONFIG_FILE = DATA_DIR / "mail_config.json"
 MAIL_LOG_FILE = DATA_DIR / "mail_log.json"         # letzte Versandversuche (Erfolg/Fehlertext)
+VENUES_FILE = DATA_DIR / "venues.json"             # ermitteltes deutsches Zweitlisting je Wert
 # Nur diese Dateitypen liefert der Server mit passendem Typ aus (alles andere als
 # Download-Bytes). Ohne den richtigen Typ zeigt der Browser z.B. das Symbol nicht an.
 CONTENT_TYPES = {
@@ -73,7 +74,52 @@ YAHOO_CHART_URL_PERIOD = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     "?period1={period1}&period2={period2}&interval={interval}"
 )
-YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search?q={query}&quotesCount=8&newsCount=0"
+YAHOO_SEARCH_URL = "https://query1.finance.yahoo.com/v1/finance/search?q={query}&quotesCount={count}&newsCount=0"
+SEARCH_COUNT_DEFAULT = 8    # Vorschlagsliste im Frontend
+SEARCH_COUNT_VENUES = 25    # Handelsplatz-Suche: alle Zweitlistings sollen mitkommen
+# Yahoos Suche findet die Zweitlistings nur zum schlichten Firmennamen: zu
+# "Cloudflare, Inc." liefert sie zwei Treffer, zu "Cloudflare" alle sieben.
+COMPANY_SUFFIX_WORDS = {
+    "inc", "corp", "corporation", "company", "co", "ltd", "limited", "plc", "ag", "se",
+    "nv", "sa", "group", "holding", "holdings",
+}
+# Alle Kurse werden auf diese Währung umgerechnet, damit die Zahl unter dem Chart die
+# ist, die der Nutzer beim deutschen Broker sieht. Yahoo führt jedes Paar als
+# "{WÄHRUNG}EUR=X" — immer multiplizieren, nie invertieren.
+DISPLAY_CURRENCY = "EUR"
+FX_PAIR_TEMPLATE = "{currency}" + DISPLAY_CURRENCY + "=X"
+# Muss den längsten Kurs-Zeitraum (10 Jahre + 320 Tage Vorlauf) sicher überdecken,
+# sonst fehlt am Anfang der Historie der Umrechnungskurs.
+FX_LOOKBACK_DAYS = 12 * 365
+# Die Reihe enthält auch den heutigen (noch laufenden) Tageskurs. Eine Stunde Cache
+# genügt: Wechselkurse bewegen sich in dieser Zeit um Bruchteile eines Prozents.
+FX_CACHE_TTL_SECONDS = 3600
+
+# Ein Favorit bezeichnet ein PAPIER, keinen Handelsplatz. Steht die Heimatbörse still,
+# liefert ein deutsches Zweitlisting den aktuellen Kurs — es handelt von 08:00 bis 22:00
+# und deckt damit den Vormittag ab, an dem die US-Vorbörse noch nicht läuft.
+VENUE_SUFFIXES = (".F", ".DE", ".MU", ".SG", ".DU", ".HM", ".BE", ".HA")
+VENUE_RESOLVE_TTL_SECONDS = 7 * 86400   # Listings ändern sich praktisch nie
+VENUE_MEMO_TTL_SECONDS = 300            # wie oft venues.json überhaupt gelesen wird
+VENUE_MIN_CANDLES = 200                 # Tageskerzen im letzten Jahr
+VENUE_MIN_OVERLAP = 30                  # gemeinsame Handelstage für den Qualitätsvergleich
+# Median-Abweichung gegen das Primärlisting. Frankfurt liegt bei rund 1 %, München bei
+# 2,4 % — die Schwelle lässt saubere Plätze zu und hält ausgedünnte Orderbücher draußen.
+VENUE_MAX_MEDIAN_DEVIATION = 2.0
+# Ältere Kurse zählen nicht: eine Börse, die seit anderthalb Stunden nicht gehandelt hat,
+# ist keine offene Börse.
+MAX_QUOTE_AGE_SECONDS = 20 * 60
+# Gemeldet wird nach deutschen Handelstagen. Der DAX ist dafür das verlässlichste
+# Raster: er hat an jedem hiesigen Handelstag eine Kerze und an keinem Feiertag.
+GERMAN_CALENDAR_SYMBOL = "^GDAXI"
+GERMAN_CALENDAR_TTL_SECONDS = 6 * 3600
+PHASE_LABELS = {"pre": "Vorbörse", "post": "Nachbörse"}
+EXCHANGE_LABELS = {
+    "NYQ": "New York", "NMS": "Nasdaq", "NGM": "Nasdaq", "PNK": "OTC", "BTS": "BATS",
+    "FRA": "Frankfurt", "GER": "Xetra", "STU": "Stuttgart", "MUN": "München",
+    "DUS": "Düsseldorf", "HAM": "Hamburg", "BER": "Berlin", "HAN": "Hannover",
+    "KSC": "Korea", "CCC": "Krypto", "CME": "CME", "CMX": "COMEX",
+}
 # CFTC Commitments of Traders (wöchentlich, dienstags erhoben, freitags veröffentlicht).
 # "Consolidated" fasst den großen und den E-Mini-Kontrakt zusammen und ist als einzige
 # S&P-500-Reihe von 2010 bis heute lückenlos durchgehend.
@@ -214,19 +260,28 @@ def get_market_data(symbol):
     data = fetch_json(url)
     result = data["chart"]["result"][0]
     meta = result["meta"]
-    closes = [c for c in result["indicators"]["quote"][0]["close"] if c is not None]
+    points = [
+        (t, c) for t, c in zip(result.get("timestamp", []), result["indicators"]["quote"][0]["close"])
+        if c is not None
+    ]
+    points, currency = convert_points(points, meta.get("currency"))
+    closes = [p[1] for p in points]
 
-    current_price = meta.get("regularMarketPrice", closes[-1])
+    # Der frischeste Kurs von einer Börse, die gerade handelt — regularMarketPrice
+    # steht außerhalb der Handelszeit auf dem Schlusskurs des Vortages.
+    live = cached(("quote", symbol), CACHE_TTL_SECONDS, lambda: get_live_quote(symbol))
+    current_price = live["price"] if live else (closes[-1] if closes else None)
     sma200 = sum(closes[-200:]) / 200 if len(closes) >= 200 else None
     rsi14 = compute_rsi14(closes)
 
     return {
         "symbol": meta.get("symbol", symbol),
         "name": meta.get("longName") or meta.get("shortName") or meta.get("symbol", symbol),
-        "currency": meta.get("currency"),
+        "currency": currency,
         "price": current_price,
         "sma200": sma200,
         "rsi14": rsi14,
+        "quote": live,
     }
 
 
@@ -307,6 +362,9 @@ def get_daily_moving_average_by_date(symbol, window=MA_WINDOW_DEFAULT):
     closes = result["indicators"]["quote"][0]["close"]
 
     points = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
+    # Gleiche Währung wie die untertägige Reihe, auf die diese Linie gelegt wird —
+    # sonst läge der Durchschnitt um den Wechselkurs neben dem Kurs.
+    points, _ = convert_points(points, result.get("meta", {}).get("currency"))
     daily_timestamps = [p[0] for p in points]
     daily_closes = [p[1] for p in points]
     ma_series = compute_moving_average(daily_closes, window)
@@ -354,6 +412,7 @@ def get_daily_ema_by_date(symbol, period):
     closes = result["indicators"]["quote"][0]["close"]
 
     points = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
+    points, _ = convert_points(points, result.get("meta", {}).get("currency"))
     daily_timestamps = [p[0] for p in points]
     daily_closes = [p[1] for p in points]
     ema_series = compute_ema_series(daily_closes, period)
@@ -385,6 +444,240 @@ def ema_for_window(days, interval, symbol, all_closes, all_timestamps):
     return compute_ema_series(all_closes, days)
 
 
+def fetch_fx_series(currency):
+    """Tagesreihe des Wechselkurses `currency` -> DISPLAY_CURRENCY."""
+    period2 = int(time.time())
+    period1 = period2 - FX_LOOKBACK_DAYS * 86400
+    url = YAHOO_CHART_URL_PERIOD.format(
+        symbol=quote(FX_PAIR_TEMPLATE.format(currency=currency), safe=""),
+        period1=period1, period2=period2, interval="1d",
+    )
+    result = fetch_json(url)["chart"]["result"][0]
+    points = [
+        (t, c) for t, c in zip(result.get("timestamp", []), result["indicators"]["quote"][0]["close"])
+        if c is not None
+    ]
+    return [p[0] for p in points], [p[1] for p in points]
+
+
+def get_fx_series(currency):
+    """(Zeiten, Kurse) für die Umrechnung nach EUR — None, wenn nichts zu tun ist.
+
+    Auch bei einem Fehler None: dann bleiben die Kurse in ihrer Originalwährung, was
+    die Aufrufer über die zurückgegebene Währung nach außen sichtbar machen. Lieber
+    eine ehrlich beschriftete Fremdwährung als eine falsch beschriftete EUR-Zahl."""
+    if not currency or currency == DISPLAY_CURRENCY:
+        return None
+    try:
+        return cached(("fx", currency), FX_CACHE_TTL_SECONDS, lambda: fetch_fx_series(currency))
+    except Exception as exc:
+        print(f"Wechselkurs {currency}->{DISPLAY_CURRENCY} nicht verfügbar: {exc}")
+        return None
+
+
+def convert_points(points, currency):
+    """(Zeit, Kurs)-Paare nach EUR umrechnen. Liefert (Punkte, tatsächliche Währung).
+
+    Punkte ohne Wechselkurs fallen heraus statt None zu werden — die Indikatoren
+    rechnen direkt auf den Kursen und vertragen keine Lücken. Betroffen wäre ohnehin
+    nur der Anfang der Historie, falls die FX-Reihe kürzer ist als der Kurszeitraum."""
+    series = get_fx_series(currency)
+    if series is None:
+        return points, currency or DISPLAY_CURRENCY
+    fx_times, fx_values = series
+    converted = []
+    for t, close in points:
+        rate = forward_filled(fx_times, fx_values, t)
+        if rate:
+            converted.append((t, close * rate))
+    if not converted:
+        return points, currency
+    return converted, DISPLAY_CURRENCY
+
+
+def convert_price(price, currency, timestamp=None):
+    """Einzelkurs nach EUR. Liefert (Kurs, tatsächliche Währung) wie convert_points."""
+    if price is None:
+        return None, currency or DISPLAY_CURRENCY
+    points, effective = convert_points([(timestamp or int(time.time()), price)], currency)
+    return points[0][1], effective
+
+
+def fetch_daily(symbol, range_key="1y"):
+    """({"JJJJ-MM-TT": (Zeit, Schluss)}, Meta) — Basis für den Vergleich zweier
+    Listings desselben Papiers."""
+    url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""), range=range_key, interval="1d")
+    result = fetch_json(url)["chart"]["result"][0]
+    by_date = {}
+    for t, close in zip(result.get("timestamp", []), result["indicators"]["quote"][0]["close"]):
+        if close is not None:
+            by_date[time.strftime("%Y-%m-%d", time.localtime(t))] = (t, close)
+    return by_date, result.get("meta", {})
+
+
+def venue_deviation(primary, primary_currency, candidate, candidate_currency):
+    """Median-Abweichung zweier Listings in Prozent (beide nach EUR gerechnet), oder
+    None bei zu wenig Überschneidung. Misst, wie sauber ein Zweitlisting das
+    Primärlisting nachzeichnet — dünne Orderbücher fallen hier durch."""
+    diffs = []
+    for date_key, (t, close) in candidate.items():
+        reference = primary.get(date_key)
+        if not reference:
+            continue
+        reference_eur, _ = convert_price(reference[1], primary_currency, reference[0])
+        candidate_eur, _ = convert_price(close, candidate_currency, t)
+        if reference_eur and candidate_eur:
+            diffs.append(abs(candidate_eur / reference_eur - 1) * 100)
+    if len(diffs) < VENUE_MIN_OVERLAP:
+        return None
+    diffs.sort()
+    return diffs[len(diffs) // 2]
+
+
+def find_german_venue(symbol):
+    """Bestes deutsches Zweitlisting zu `symbol` ermitteln (teuer: Suche + Prüfläufe)."""
+    if symbol.endswith(VENUE_SUFFIXES):
+        return None                                  # handelt schon in Deutschland
+    primary, primary_meta = fetch_daily(symbol)
+    name = primary_meta.get("longName") or primary_meta.get("shortName")
+    if not name or not primary:
+        return None
+    primary_currency = primary_meta.get("currency")
+
+    best = None
+    for hit in search_symbols(company_search_term(name), SEARCH_COUNT_VENUES):
+        candidate_symbol = hit["symbol"]
+        if candidate_symbol == symbol or not candidate_symbol.endswith(VENUE_SUFFIXES):
+            continue
+        try:
+            candidate, candidate_meta = fetch_daily(candidate_symbol)
+        except Exception:
+            continue
+        # Zu wenig eigene Historie heißt: der Platz handelt zu selten, um darauf einen
+        # Kurs zu stützen. Fremdwährung wäre ein Treffer auf einem anderen Papier.
+        if candidate_meta.get("currency") != DISPLAY_CURRENCY or len(candidate) < VENUE_MIN_CANDLES:
+            continue
+        deviation = venue_deviation(primary, primary_currency, candidate, candidate_meta.get("currency"))
+        if deviation is None or deviation > VENUE_MAX_MEDIAN_DEVIATION:
+            continue
+        if best is None or deviation < best["deviation"]:
+            best = {
+                "venue": candidate_symbol,
+                "exchange": candidate_meta.get("exchangeName"),
+                "deviation": round(deviation, 2),
+            }
+    return best
+
+
+def resolve_venue(symbol):
+    """Zwischengespeichertes Ergebnis von find_german_venue — Symbol oder None.
+
+    Auch das negative Ergebnis wird festgehalten: für Bitcoin oder einen Future gibt
+    es kein deutsches Listing, und danach soll nicht bei jedem Abruf neu gesucht werden.
+    Listings ändern sich praktisch nie, deshalb die lange Gültigkeit."""
+    def lookup():
+        store = read_json_file(VENUES_FILE, {}) or {}
+        entry = store.get(symbol)
+        now = int(time.time())
+        if entry and now - entry.get("resolved", 0) < VENUE_RESOLVE_TTL_SECONDS:
+            return entry.get("venue")
+        try:
+            found = find_german_venue(symbol)
+        except Exception as exc:
+            print(f"Handelsplatz-Suche für {symbol} fehlgeschlagen: {exc}")
+            return entry.get("venue") if entry else None
+        record = {"venue": None, "resolved": now}
+        if found:
+            record.update(found)
+        with _file_lock:
+            store = read_json_file(VENUES_FILE, {}) or {}
+            store[symbol] = record
+            write_json_file(VENUES_FILE, store)
+        return record["venue"]
+
+    return cached(("venue", symbol), VENUE_MEMO_TTL_SECONDS, lookup)
+
+
+def fetch_last_print(symbol, include_pre_post=False):
+    """Der jüngste bekannte Handel eines Symbols: Zeit, Kurs, Währung, Börse, Phase."""
+    url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""), range="1d", interval="5m")
+    if include_pre_post:
+        url += "&includePrePost=true"
+    result = fetch_json(url)["chart"]["result"][0]
+    meta = result.get("meta", {})
+
+    best_ts, best_price = 0, None
+    for t, close in zip(result.get("timestamp", []), result["indicators"]["quote"][0]["close"]):
+        if close is not None and t > best_ts:
+            best_ts, best_price = t, close
+    # regularMarketPrice steht außerhalb der Handelszeit auf dem Vortagesschluss und
+    # zählt deshalb nur, wenn es wirklich jünger ist als die letzte Kerze. Auf dünnen
+    # deutschen Plätzen ist es umgekehrt die bessere Quelle: dort fehlen die Kerzen.
+    meta_ts = meta.get("regularMarketTime") or 0
+    if meta.get("regularMarketPrice") is not None and meta_ts > best_ts:
+        best_ts, best_price = meta_ts, meta["regularMarketPrice"]
+    if best_price is None:
+        return None
+
+    return {
+        "ts": best_ts,
+        "price": best_price,
+        "currency": meta.get("currency"),
+        "exchange": meta.get("exchangeName"),
+        "phase": trading_phase(meta, best_ts),
+    }
+
+
+def trading_phase(meta, timestamp):
+    """"pre", "post" oder "regular" — liegt der Zeitpunkt vor, nach oder in der
+    regulären Sitzung? Yahoo nennt die Grenzen der laufenden Sitzung selbst mit."""
+    regular = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
+    if not regular.get("start") or not regular.get("end"):
+        return "regular"
+    if timestamp < regular["start"]:
+        return "pre"
+    if timestamp >= regular["end"]:
+        return "post"
+    return "regular"
+
+
+def quote_label(exchange, phase):
+    """Beschriftung für die Anzeige, z.B. "Vorbörse New York"."""
+    place = EXCHANGE_LABELS.get(exchange, exchange or "Börse")
+    return f"{PHASE_LABELS[phase]} {place}" if phase in PHASE_LABELS else place
+
+
+def get_live_quote(symbol):
+    """Frischester Kurs eines Papiers über alle bekannten Handelsplätze, in EUR.
+
+    Es gewinnt schlicht der jüngste Handel: ab 10:00 ist das die US-Vor-/Nachbörse,
+    davor das deutsche Zweitlisting. Ein Print, der älter ist als MAX_QUOTE_AGE_SECONDS,
+    zählt gar nicht — eine Börse, die seit anderthalb Stunden nicht gehandelt hat, ist
+    keine offene Börse, und ihr letzter Kurs darf kein Signal tragen."""
+    now = int(time.time())
+    candidates = []
+    for candidate_symbol, source in ((symbol, "primary"), (resolve_venue(symbol), "fallback")):
+        if not candidate_symbol:
+            continue
+        try:
+            last = fetch_last_print(candidate_symbol, include_pre_post=(source == "primary"))
+        except Exception as exc:
+            print(f"Kurs {candidate_symbol} nicht abrufbar: {exc}")
+            continue
+        if not last or now - last["ts"] > MAX_QUOTE_AGE_SECONDS:
+            continue
+        price, currency = convert_price(last["price"], last["currency"], last["ts"])
+        candidates.append({
+            "price": price,
+            "ts": last["ts"],
+            "currency": currency,
+            "venue": candidate_symbol,
+            "venueName": quote_label(last["exchange"], last["phase"]),
+            "source": source,
+        })
+    return max(candidates, key=lambda q: q["ts"]) if candidates else None
+
+
 def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
     if range_key not in CHART_RANGES:
         range_key = DEFAULT_CHART_RANGE
@@ -400,13 +693,49 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
         )
     else:
         url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""), range=range_key, interval=interval)
+    # Untertägig auch Vor- und Nachbörse: US-Quartalszahlen kommen nach Börsenschluss,
+    # und genau die Bewegung danach ist die interessante. Tageskerzen ignorieren den
+    # Parameter (von Yahoo geprüft) — dort übernimmt der angehängte Live-Kurs weiter unten.
+    if interval in INTRADAY_INTERVALS:
+        url += "&includePrePost=true"
 
     data = fetch_json(url)
     result = data["chart"]["result"][0]
+    meta = result.get("meta", {})
     timestamps = result.get("timestamp", [])
     closes = result["indicators"]["quote"][0]["close"]
 
     points = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
+    points, currency = convert_points(points, meta.get("currency"))
+
+    # Der frischeste Kurs von einer Börse, die gerade handelt. Bei Tageskerzen fehlt
+    # der laufende Tag sonst komplett, solange die Heimatbörse noch geschlossen ist —
+    # dann steht der Chart auf dem Schlusskurs von gestern und die Überwachung sieht
+    # eine Bewegung erst Stunden später. Untertägig ist er schon in den Kerzen drin.
+    if interval in INTRADAY_INTERVALS:
+        # Untertägig steckt der aktuelle Kurs schon in den Kerzen (inkl. Vor-/Nachbörse).
+        # Die Herkunftszeile beschreibt deshalb genau diese Reihe und nicht die Kaskade —
+        # sonst stünde "Frankfurt" über einem Chart aus New Yorker Kerzen.
+        quote_info = None
+        if points:
+            last_ts, last_close = points[-1]
+            quote_info = {
+                "price": last_close, "ts": last_ts, "currency": currency,
+                "venue": symbol, "source": "primary", "appended": False,
+                "venueName": quote_label(meta.get("exchangeName"), trading_phase(meta, last_ts)),
+            }
+    else:
+        quote_info = cached(("quote", symbol), CACHE_TTL_SECONDS, lambda: get_live_quote(symbol))
+        appended = False
+        if quote_info and points:
+            last_day = time.strftime("%Y-%m-%d", time.localtime(points[-1][0]))
+            quote_day = time.strftime("%Y-%m-%d", time.localtime(quote_info["ts"]))
+            if quote_day > last_day:
+                points = points + [(quote_info["ts"], quote_info["price"])]
+                appended = True
+        if quote_info:
+            quote_info = {**quote_info, "appended": appended}
+
     all_timestamps = [p[0] for p in points]
     all_closes = [p[1] for p in points]
 
@@ -432,10 +761,17 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
         # Der Tages-Chart soll am Handelsstart des letzten Handelstages beginnen.
         # Ein rollierendes 24-Stunden-Fenster würde stattdessen noch den Nachmittag
         # des Vortages mitzeigen, deshalb nach Börsen-Kalendertag abschneiden.
-        gmt_offset = result.get("meta", {}).get("gmtoffset") or 0
-        last_day = (all_timestamps[-1] + gmt_offset) // 86400
+        gmt_offset = meta.get("gmtoffset") or 0
+        exchange_days = sorted({(t + gmt_offset) // 86400 for t in all_timestamps})
+        start_day = exchange_days[-1]
+        # Hat die reguläre Sitzung heute noch nicht begonnen, bliebe davon nur ein
+        # Stummel Vorbörse übrig — und der Sprung von gestern Abend wäre abgeschnitten.
+        # Dann lieber die letzte richtige Sitzung samt ihrer Nachbörse zeigen.
+        regular_start = ((meta.get("currentTradingPeriod") or {}).get("regular") or {}).get("start")
+        if regular_start and time.time() < regular_start and len(exchange_days) > 1:
+            start_day = exchange_days[-2]
         start_index = next(
-            (i for i, t in enumerate(all_timestamps) if (t + gmt_offset) // 86400 == last_day), 0
+            (i for i, t in enumerate(all_timestamps) if (t + gmt_offset) // 86400 >= start_day), 0
         )
     elif display_days and all_timestamps:
         cutoff = all_timestamps[-1] - display_days * 86400
@@ -462,11 +798,24 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
         "priceVsMaPct": price_vs_ma_pct_display,
         "priceVsMaPctAvg": price_vs_ma_pct_avg,
         "priceVsMaPctStd": price_vs_ma_pct_std,
+        # Was wirklich in den Zahlen steckt: normalerweise EUR, bei ausgefallenem
+        # Wechselkurs die Originalwährung. Nie raten lassen.
+        "currency": currency,
+        "quote": quote_info,
     }
 
 
-def search_symbols(query):
-    url = YAHOO_SEARCH_URL.format(query=quote(query))
+def company_search_term(name):
+    """Firmennamen auf den Kern zurückschneiden, damit Yahoos Suche die Zweitlistings
+    findet: "Cloudflare, Inc." -> "Cloudflare", "Sony Group Corporation" -> "Sony"."""
+    words = name.split(",")[0].split()
+    while len(words) > 1 and words[-1].lower().strip(".") in COMPANY_SUFFIX_WORDS:
+        words.pop()
+    return " ".join(words)
+
+
+def search_symbols(query, count=SEARCH_COUNT_DEFAULT):
+    url = YAHOO_SEARCH_URL.format(query=quote(query), count=count)
     data = fetch_json(url)
     return [
         {
@@ -600,7 +949,7 @@ DURATION_MILESTONES = [1, 2, 3, 7, 14, 24]
 # Feiertagen steht sie still. Damit kommt keine Meldung, wenn sich an der Boerse ohnehin
 # nichts bewegen kann — und die Uhrzeit des Ausschlags bleibt trotzdem erhalten, weil das
 # Nachtfenster jeden Tag gleich lang ist. Feiertage erkennt der Server am Kerzenraster des
-# Wertes selbst (siehe trading_days_from); es gibt keine Feiertagsliste zu pflegen.
+# DAX (siehe german_trading_days); es gibt keine Feiertagsliste zu pflegen.
 QUIET_END_SECONDS = 7 * 3600 + 30 * 60      # ab 07:30 wird gemeldet
 QUIET_START_SECONDS = 23 * 3600             # ab 23:00 ist Ruhe
 OPEN_SECONDS_PER_DAY = QUIET_START_SECONDS - QUIET_END_SECONDS   # 15,5 Stunden Handelszeit
@@ -613,10 +962,6 @@ DURATION_UNITS = {                          # (Handelszeit-Sekunden, Einzahl, Me
     "10y": (OPEN_SECONDS_PER_DAY, "Tag", "Tagen"),         # 1 Handelstag
 }
 DEFAULT_DURATION_UNIT = (OPEN_SECONDS_PER_DAY, "Tag", "Tagen")
-# Zeitfenster, deren Kerzenraster den Handelskalender weit genug abdeckt, um Feiertage
-# daran zu erkennen. Der Tages-Chart liefert nur den letzten Handelstag, sonst
-# entscheidet dort allein Mo-Fr.
-TRADING_GRID_RANGES = ("5d", "1mo", "1y", "5y", "10y")
 
 
 def milestone_label(units, range_key):
@@ -774,20 +1119,28 @@ def forward_filled(times, values, timestamp):
     return values[index] if index >= 0 else None
 
 
-def trading_days_from(data, range_key):
-    """Handelstage (als lokale Kalendertage) aus dem Kerzenraster eines Wertes.
+def german_trading_days():
+    """Deutsche Handelstage als lokale Kalendertage, aus dem Kerzenraster des DAX.
 
-    Das ist der echte Handelskalender der Börse dieses Wertes — Feiertage inklusive, ohne
-    eigene Feiertagsliste: an einem Tag ohne Handel liefert Yahoo keine Kerze. Taugt nur
-    für Zeitfenster mit ausreichend weitem Tagesraster (TRADING_GRID_RANGES), sonst None
-    — dann entscheidet allein Mo-Fr."""
-    if range_key not in TRADING_GRID_RANGES:
+    Gemeldet wird nach DEUTSCHEN Handelszeiten, nicht nach denen der Heimatbörse des
+    Wertes: gehandelt wird hier, also zählt der hiesige Kalender. Ein Raster aus dem
+    Wert selbst taugt dafür nicht — solange die NYSE morgens noch geschlossen ist,
+    fehlt dort die heutige Kerze und der ganze Tag sähe wie ein Feiertag aus.
+
+    None heißt "Kalender unbekannt"; dann entscheidet allein Mo-Fr (siehe is_trading_day)."""
+    def fetch():
+        by_date, _ = fetch_daily(GERMAN_CALENDAR_SYMBOL, "1y")
+        days = set()
+        for date_key in by_date:
+            year, month, day = date_key.split("-")
+            days.add((int(year), int(month), int(day)))
+        return days or None
+
+    try:
+        return cached("german_trading_days", GERMAN_CALENDAR_TTL_SECONDS, fetch)
+    except Exception as exc:
+        print(f"Deutscher Handelskalender nicht abrufbar: {exc}")
         return None
-    days = set()
-    for stamp in data.get("timestamps") or []:
-        local = time.localtime(stamp)
-        days.add((local.tm_year, local.tm_mon, local.tm_mday))
-    return days or None
 
 
 def is_trading_day(local, trading_days):
@@ -1202,9 +1555,13 @@ def normalize_state_entry(value):
     Felder) werden verträglich übernommen: ohne Zeitstempel gilt die Sperre schlicht als
     abgelaufen, und runAnchor 0 trifft nie auf eine echte Kerze — dann entscheidet allein
     die Sperre wie bisher. `notifiedBars` ist der alte Name von `notifiedMilestones`; er
-    wird weiter gelesen, damit schon gemeldete Meilensteine nicht erneut fällig werden."""
+    wird weiter gelesen, damit schon gemeldete Meilensteine nicht erneut fällig werden.
+
+    `pendingSignal`/`pendingSince` halten einen Ausschlag fest, der nur auf einem Kurs aus
+    einem deutschen Zweitlisting beruht und deshalb noch auf seine Bestätigung wartet."""
     empty = {"signal": "none", "notifiedMilestones": [], "notifiedSignal": "none",
-             "notifiedAt": 0, "runAnchor": 0, "runSince": 0}
+             "notifiedAt": 0, "runAnchor": 0, "runSince": 0,
+             "pendingSignal": "none", "pendingSince": 0}
     if isinstance(value, dict):
         return {
             "signal": value.get("signal", "none"),
@@ -1214,6 +1571,8 @@ def normalize_state_entry(value):
             "notifiedAt": value.get("notifiedAt") or 0,
             "runAnchor": value.get("runAnchor") or 0,
             "runSince": value.get("runSince") or 0,
+            "pendingSignal": value.get("pendingSignal") or "none",
+            "pendingSince": value.get("pendingSince") or 0,
         }
     if isinstance(value, str):
         return {**empty, "signal": value}
@@ -1270,9 +1629,13 @@ def run_alert_check(force=False):
     favorites = [f for f in favorites if f.get("notify", True)]
     if not favorites or not filters:
         return []
-    # Nachtruhe und Wochenende gelten für alle Werte gleich — dann gar nicht erst bei
-    # Yahoo anfragen. Feiertage haengen am einzelnen Wert und werden unten geprüft.
-    if not force and not in_trading_window(int(time.time())):
+    # Nachtruhe, Wochenende und deutsche Feiertage gelten für alle Werte gleich — dann
+    # gar nicht erst bei Yahoo anfragen. Maßgeblich ist der DEUTSCHE Handelskalender,
+    # nicht der der jeweiligen Heimatbörse: gehandelt wird hier. Das per-Wert-Raster
+    # hielte einen US-Wert den ganzen Vormittag für geschlossen, weil die NYSE dann
+    # noch keine heutige Kerze hat — und genau das hat Meldungen um Stunden verzögert.
+    trading = german_trading_days()
+    if not force and not in_trading_window(int(time.time()), trading):
         return []
 
     fear_greed = cached("fear_greed", CACHE_TTL_SECONDS, get_fear_greed)
@@ -1334,15 +1697,29 @@ def run_alert_check(force=False):
                     print(f"Prüfung {key} fehlgeschlagen: {exc}")
                     continue
 
-                # Handelt dieser Wert heute überhaupt? Das Kerzenraster kennt die Feiertage
-                # seiner Börse. An einem geschlossenen Tag bleibt der Zustand unberührt —
-                # gemeldet wird dann beim ersten Durchlauf am nächsten Handelstag.
-                trading = trading_days_from(data, range_key)
                 now = int(time.time())
-                if not force and not in_trading_window(now, trading):
-                    continue
-
                 prev = normalize_state_entry(previous.get(key))
+
+                # Kurse aus einem deutschen Zweitlisting tragen erst nach Bestätigung:
+                # diese Orderbücher sind dünn, ein einzelner Ausreißer-Print würde sonst
+                # eine Mail auslösen. Der Ausschlag muss im nächsten Durchlauf (rund fünf
+                # Minuten später) noch stehen. Ab 10:00 liefert die Vor-/Nachbörse der
+                # Heimatbörse ohnehin den frischeren Kurs und bestätigt sofort, deshalb
+                # betrifft die Wartezeit praktisch nur den frühen Vormittag.
+                live = data.get("quote") or {}
+                unconfirmed = (
+                    signal is not None
+                    and live.get("appended")
+                    and live.get("source") == "fallback"
+                    and prev["pendingSignal"] != signal
+                )
+                if unconfirmed and not force:
+                    current[key] = {
+                        **prev,
+                        "pendingSignal": signal,
+                        "pendingSince": now,
+                    }
+                    continue
 
                 def make_note(sustained_units=None):
                     note = {
@@ -1384,11 +1761,16 @@ def run_alert_check(force=False):
                         fresh.append(make_note())
                     return list(already) + due
 
-                def keep_notified(state_signal, milestones, anchor=None, since=None):
+                def keep_notified(state_signal, milestones, anchor=None, since=None,
+                                  pending=None):
                     """Zustand fortschreiben, ohne Sperr-, Meilenstein- und Dauer-Gedächtnis zu
                     verlieren. Ohne `anchor`/`since` bleiben die gemerkten Werte stehen — beim
                     Wegkippen des Signals gibt es keine neuen, und genau sie werden später zum
-                    Wiedererkennen derselben Serie und für ihre Dauer gebraucht."""
+                    Wiedererkennen derselben Serie und für ihre Dauer gebraucht.
+
+                    `pending` setzt die Bestätigungs-Vormerkung neu; None behält sie. Beim
+                    Wegkippen wird sie gelöscht, damit ein späterer Ausschlag wieder von vorn
+                    bestätigt werden muss."""
                     return {
                         "signal": state_signal,
                         "notifiedMilestones": milestones,
@@ -1396,6 +1778,8 @@ def run_alert_check(force=False):
                         "notifiedAt": prev["notifiedAt"],
                         "runAnchor": prev["runAnchor"] if anchor is None else anchor,
                         "runSince": prev["runSince"] if since is None else since,
+                        "pendingSignal": prev["pendingSignal"] if pending is None else pending,
+                        "pendingSince": prev["pendingSince"] if pending is None else now,
                     }
 
                 cooling = now - prev["notifiedAt"] < NOTIFY_COOLDOWN_SECONDS
@@ -1425,7 +1809,8 @@ def run_alert_check(force=False):
                 if not signal:
                     # Kein Ausschlag mehr. Die Sperre muss trotzdem stehen bleiben, sonst
                     # wäre jedes kurze Wegkippen des Signals wieder ein "neuer" Ausschlag.
-                    current[key] = keep_notified("none", prev["notifiedMilestones"])
+                    current[key] = keep_notified("none", prev["notifiedMilestones"],
+                                                 pending="none")
                 elif continues:
                     # Nur neu erreichte Dauer-Schwellen melden — das Gedächtnis bleibt
                     # erhalten, also kommt nichts doppelt.
