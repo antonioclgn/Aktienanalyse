@@ -217,7 +217,16 @@
   .signal-note { display: flex; width: fit-content; max-width: 100%; align-items: center; gap: 8px; margin-bottom: 6px; padding: 4px 10px; border-radius: var(--radius); font-weight: 600; }
   .signal-note.buy { background: color-mix(in srgb, var(--buy) 16%, transparent); color: var(--buy-ink); }
   .signal-note.sell { background: color-mix(in srgb, var(--sell) 14%, transparent); color: var(--sell-ink); }
-  .chart-stack { display: grid; }
+  .chart-stack { display: grid; position: relative; }
+  /* Solange ein anderer Wert oder Zeitraum lädt: alter Chart abgeblendet, Hinweis darüber. */
+  .chart-stack.is-loading > * { opacity: .35; }
+  .chart-stack.is-loading::after {
+    content: "Lädt …"; position: absolute; top: 120px; left: 50%; transform: translateX(-50%);
+    padding: 6px 14px; background: var(--surface); color: var(--ink); border: 1px solid var(--line);
+    border-radius: var(--radius); font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.08);
+  }
+  .segmented button.is-pending { outline: 2px dashed var(--active-ink); outline-offset: -4px; cursor: progress; }
+  #chart-error { margin-bottom: 6px; }
   .main-chart { display: block; width: 100%; height: var(--chart-h); }
   .ind-chart { position: relative; border-top: 1px solid var(--line-soft); }
   .ind-chart svg { display: block; width: 100%; height: var(--ind-h); }
@@ -609,6 +618,7 @@
       </div>
       <div id="signal-note" class="signal-note" hidden></div>
       <div id="data-warning" class="warning"></div>
+      <div id="chart-error" class="warning" role="status"></div>
       <div class="legend" aria-hidden="true">
         <span><i style="border-color: var(--c-ema50)"></i>EMA 50</span>
         <span><i style="border-color: var(--c-ema200)"></i>EMA 200</span>
@@ -2638,8 +2648,29 @@
       let chartRequestId = 0;
       let dataRequestId = 0;
 
+      // Was gerade wirklich angezeigt wird — Grundlage für „lädt" und für das Zurückspringen,
+      // falls ein Zeitraum nicht geladen werden kann.
+      let shownChart = { symbol: null, range: null };
+
+      function setActiveRange(rangeKey) {
+        document.querySelectorAll('#range-buttons button').forEach(b => {
+          b.classList.toggle('is-active', b.dataset.range === rangeKey);
+          b.classList.remove('is-pending');
+        });
+      }
+
+      function setChartLoading(rangeKey, loading) {
+        document.querySelector('.chart-stack').classList.toggle('is-loading', loading);
+        document.querySelectorAll('#range-buttons button').forEach(b => {
+          b.classList.toggle('is-pending', loading && b.dataset.range === rangeKey);
+        });
+      }
+
       async function loadChart(symbol, rangeKey) {
         const requestId = ++chartRequestId;
+        // Das minütliche Aktualisieren desselben Charts blendet nichts ab.
+        const switching = symbol !== shownChart.symbol || rangeKey !== shownChart.range;
+        if (switching) setChartLoading(rangeKey, true);
         try {
           const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}`
             + `&range=${encodeURIComponent(rangeKey)}`
@@ -2648,6 +2679,10 @@
           if (requestId !== chartRequestId) return;
           if (data.error) throw new Error(data.error);
           lastChartData = data;
+          shownChart = { symbol, range: rangeKey };
+          setChartLoading(rangeKey, false);
+          setActiveRange(rangeKey);
+          document.getElementById('chart-error').textContent = '';
 
           // Gemeinsamer linker Rand für alle Charts auf der Seite, damit sie trotz
           // unterschiedlich breiter Y-Achsen-Zahlen (Kurs, RSI, %) an derselben Stelle beginnen.
@@ -2682,10 +2717,20 @@
           renderQuoteSource(data.quote, data.timestamps);
         } catch (err) {
           if (requestId !== chartRequestId) return;
-          document.getElementById('range-change').textContent = 'Fehler';
-          document.getElementById('current-price').textContent = '';
-          document.getElementById('quote-source').textContent = '';
           console.error(err);
+          setChartLoading(rangeKey, false);
+          const label = RANGE_LABELS[rangeKey] || rangeKey;
+          document.getElementById('chart-error').textContent =
+            `Der Zeitraum „${label}“ konnte nicht geladen werden (${err.message || err}). Bitte noch einmal tippen.`;
+          if (shownChart.symbol === symbol && shownChart.range) {
+            // Der alte Chart bleibt stehen — dann muss auch die Auswahl wieder zu ihm passen.
+            currentRange = shownChart.range;
+            setActiveRange(shownChart.range);
+          } else {
+            document.getElementById('range-change').textContent = '';
+            document.getElementById('current-price').textContent = '';
+            document.getElementById('quote-source').textContent = '';
+          }
         }
       }
 
@@ -2801,8 +2846,8 @@
       rangeButtons.forEach(btn => {
         btn.classList.toggle('is-active', btn.dataset.range === currentRange);
         btn.addEventListener('click', () => {
+          // Als ausgewählt gilt der Knopf erst, wenn der Chart wirklich da ist (loadChart).
           currentRange = btn.dataset.range;
-          rangeButtons.forEach(b => b.classList.toggle('is-active', b === btn));
           loadChart(currentSymbol, currentRange);
         });
       });
