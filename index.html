@@ -430,13 +430,14 @@
   html[data-design="kursblatt"] .chip { border-color: #1e1a15; font-family: var(--font-num); font-size: 13px; }
   html[data-design="kursblatt"] .signal-note {
     font-family: var(--font-num); text-transform: uppercase; letter-spacing: .06em; font-size: 13px;
-    border: 2px solid currentColor; border-radius: 2px; transform: rotate(-1.2deg);
+    border: 2px solid currentColor; border-radius: 2px;
   }
   html[data-design="kursblatt"] .signal-note.buy { background: #bfe3b4; }
   html[data-design="kursblatt"] .signal-note.sell { background: #f5c6c0; }
   html[data-design="kursblatt"] .indicator-card { background: #fbf8f0; border-color: #d9cfba; }
   html[data-design="kursblatt"] .ind-head span:first-child { font-family: var(--font-head); font-style: italic; font-weight: 600; color: #1e1a15; background: #fffdf8; }
-  html[data-design="kursblatt"] .ind-head .ind-current { background: #1e1a15; color: #fffdf8; padding: 0 5px; }
+  /* Aktuelle Werte der Indikatoren als helle Pastell-Etiketten statt schwarzer Balken. */
+  html[data-design="kursblatt"] .ind-head .ind-current { background: #f7edc6; color: #1e1a15; border: 1px solid #e2d6ae; padding: 0 5px; }
   html[data-design="kursblatt"] .ind-chart { border-top-color: #1e1a15; }
   html[data-design="kursblatt"] .popover { background: #fbf8f0; border-color: #1e1a15; box-shadow: 4px 4px 0 #1e1a15; }
   html[data-design="kursblatt"] .panel-head { background: #fbf8f0; }
