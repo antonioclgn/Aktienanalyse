@@ -1,74 +1,396 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="de" data-design="klassisch">
 <head>
 <meta charset="UTF-8">
-<!-- Feste Layout-Breite statt „width=device-width": das Handy rendert die Seite immer
-     mit 980 CSS-Pixeln und skaliert sie auf die Bildschirmbreite herunter — dieselbe
-     Darstellung wie am PC. Sonst haengt das Aussehen davon ab, ob Chrome fuer diese
-     Adresse zufaellig „Desktop-Site" gemerkt hat (beim Oeffnen aus der Mail heraus
-     greift das nicht, erst nach einem Reload). Ohne initial-scale, damit der Browser
-     selbst passend herunterskaliert; Zoomen bleibt moeglich. Desktop-Browser
-     ignorieren dieses Tag ohnehin. -->
-<meta name="viewport" content="width=980">
+<!-- Responsiv: am Handy eine App mit drei Tabs, am Tablet zwei und am PC drei Spalten. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Aktienanalyse</title>
 <!-- Symbol fuer Browser-Tab, Lesezeichen und „Zum Startbildschirm hinzufuegen". -->
 <link rel="icon" type="image/png" href="/icon.png">
 <link rel="apple-touch-icon" href="/icon.png">
+<script>
+  // Gemerktes Design sofort setzen, bevor die Seite gezeichnet wird — sonst blitzt kurz
+  // das Standard-Design auf. Die Einstellung selbst kommt vom Server (siehe applyDesign).
+  try {
+    const stored = localStorage.getItem('aktienanalyse-design');
+    if (stored) document.documentElement.dataset.design = stored;
+  } catch (e) {}
+</script>
 <style>
-  /* Verhindert, dass mobile Browser die Schrift automatisch vergrößern (Font-Boosting) —
-     sonst sieht die Seite am Handy „aufgebläht" aus. */
-  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; height: 100%; overflow-y: hidden; }
-  body { margin: 0; height: 100vh; overflow-y: hidden; display: flex; flex-direction: column; }
-  /* Drag & Drop: Reihenfolge von Indikatoren (Balken-Einstellungen), Favoriten und Filtern. */
-  .drag-handle { cursor: grab; color: #bbb; user-select: none; flex-shrink: 0; }
-  .drag-handle:active { cursor: grabbing; }
-  .dragging { opacity: 0.4; }
-  .drag-over-top { border-top: 2px solid #2563eb; }
-  .drag-over-bottom { border-bottom: 2px solid #2563eb; }
-  /* Abgewaehlter Indikator: nur optisch zurueckgenommen. Die Felder bleiben bedienbar,
-     damit man Schwellen einstellen kann, ohne den Indikator anschalten zu muessen. */
-  .indicator-card.is-off .indicator-title { color: #999; }
-  .indicator-card.is-off .indicator-body { opacity: 0.45; }
-  /* Zeilen im Filter-Menue (preset-menu). */
-  .preset-row:hover { background: #f2f2f2; }
-  .preset-row.active { background: #eef4ff; }
-  /* Nach ☆ an einem noch nicht überwachten Filter: hier fehlt noch ein Zeitfenster. */
-  #watch-ranges.needs-range { outline: 2px solid #f59e0b; outline-offset: 3px; border-radius: 3px; }
+  /* ------------------------------------------------------------------
+     Design-Tokens. Jedes Design (data-design auf <html>) setzt nur diese
+     Variablen um; Aufbau und Verhalten sind für alle gleich. Die Chart-Farben
+     liest das Script über readTheme() aus denselben Variablen.
+     ------------------------------------------------------------------ */
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #f1f3f6;
+    --ink: #1c1f24;
+    --ink-2: #4b5260;
+    --ink-3: #6b7280;
+    --line: #d9dde3;
+    --line-soft: #eceef2;
+    --accent: #2563eb;
+    --accent-ink: #ffffff;
+    --active-bg: #e8f0fe;
+    --active-ink: #1d4ed8;
+    --warn: #b45309;
+    --buy: #16a34a;
+    --sell: #dc2626;
+    --buy-ink: #15803d;
+    --sell-ink: #b91c1c;
+    --bar-opacity: 0.26;
+    --c-price: #4682b4;
+    --c-ema50: #d97706;
+    --c-ema200: #7c3aed;
+    --c-axis: #9aa1ab;
+    --c-tick: #5b6270;
+    --c-ref: #c7ccd3;
+    --c-zero: #dde1e6;
+    --c-fg: #b8860b;
+    --c-sd: #7c828c;
+    --c-rsi: #7e22ce;
+    --c-pma: #0f766e;
+    --c-macd: #2563eb;
+    --c-macd-signal: #ea580c;
+    --font-body: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-head: var(--font-body);
+    --font-num: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    --head-weight: 700;
+    --radius: 6px;
+    --radius-lg: 10px;
+    --radius-pill: 999px;
+    --pane-gap: 0px;
+    --pane-radius: 0px;
+    --pane-shadow: none;
+    --pane-border: 1px solid var(--line);
+    --btn-shadow: none;
+    --chart-h: 300px;
+    --ind-h: 84px;
+    --tabbar-h: 60px;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; height: 100%; }
+  body {
+    margin: 0; height: 100vh; height: 100dvh; overflow: hidden;
+    display: flex; flex-direction: column;
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.45 var(--font-body);
+  }
+  h1, h2, h3 { font-family: var(--font-head); font-weight: var(--head-weight); margin: 0; line-height: 1.2; }
+  .num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+  [hidden] { display: none !important; }
+
+  /* ---------- Bedienelemente ---------- */
+  button, select, input { font: inherit; color: inherit; }
+  button {
+    cursor: pointer; min-height: 32px; padding: 4px 10px;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--surface); box-shadow: var(--btn-shadow);
+  }
+  button:hover:not(:disabled) { background: var(--surface-2); }
+  button:disabled { cursor: default; opacity: .45; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(.95); }
+  button.ghost { border-color: transparent; background: none; box-shadow: none; }
+  button.icon { min-width: 32px; padding: 4px; line-height: 1; }
+  input[type="text"], input[type="number"], select {
+    min-height: 32px; padding: 4px 8px; border: 1px solid var(--line);
+    border-radius: var(--radius); background: var(--surface);
+  }
+  input[type="number"] { width: 64px; font-family: var(--font-num); }
+  input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+  label { display: inline-flex; align-items: center; gap: 6px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .muted { color: var(--ink-2); }
+  .small { font-size: 12px; }
+  .warning { color: var(--warn); font-size: 12px; }
+  .warning:empty { display: none; }
+
+  /* ---------- Kopfleiste ---------- */
+  .topbar {
+    position: relative; z-index: 20; flex: 0 0 auto;
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px));
+    background: var(--surface); border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-family: var(--font-head); font-weight: var(--head-weight); font-size: 17px; white-space: nowrap; }
+  .brand img { width: 26px; height: 26px; border-radius: 6px; }
+  .search { position: relative; flex: 1 1 520px; max-width: 560px; }
+  .search input { width: 100%; }
+  #suggestions {
+    list-style: none; margin: 4px 0 0; padding: 4px 0; position: absolute; left: 0; right: 0; z-index: 30;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0,0,0,.12); max-height: 60vh; overflow-y: auto;
+  }
+  #suggestions li { padding: 8px 10px; cursor: pointer; }
+  #suggestions li:hover { background: var(--surface-2); }
+  .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  #notifications-status { font-size: 12px; color: var(--ink-3); }
+  #notifications-toggle { display: inline-flex; align-items: center; gap: 6px; }
+  #notifications-badge { background: var(--sell); color: #fff; border-radius: var(--radius-pill); padding: 0 6px; font-size: 11px; line-height: 18px; }
+  .bell-label { white-space: nowrap; }
+
+  .popover {
+    position: absolute; top: 100%; right: 8px; z-index: 40; margin-top: 4px;
+    width: 480px; max-width: calc(100vw - 16px); max-height: 70vh; overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+    box-shadow: 0 12px 32px rgba(0,0,0,.16);
+  }
+  .panel-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+  .panel-head .actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  #notifications-mail-result { padding: 8px 10px; font-size: 12px; border-bottom: 1px solid var(--line-soft); word-break: break-word; }
+  #notifications-list { list-style: none; margin: 0; padding: 0; }
+  .note-item { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
+  .note-item:hover { background: var(--surface-2); }
+  .note-item.unread { background: var(--active-bg); }
+  .note-item.unread .note-title::before { content: "● "; color: var(--accent); }
+  .note-title { font-weight: 700; }
+  .note-title.buy { color: var(--buy-ink); }
+  .note-title.sell { color: var(--sell-ink); }
+  .note-meta { color: var(--ink-2); font-size: 12px; }
+  .note-empty, .note-footer { padding: 10px; font-size: 12px; color: var(--ink-3); }
+
+  #design-menu { width: 300px; padding: 10px; display: grid; gap: 8px; }
+  .design-option { display: grid; grid-template-columns: 44px 1fr; gap: 10px; align-items: center; text-align: left; padding: 8px; min-height: 56px; }
+  .design-option[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .design-option small { display: block; color: var(--ink-2); font-size: 12px; }
+  .swatches { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; width: 44px; height: 44px; }
+  .swatches i { border-radius: 4px; border: 1px solid rgba(0,0,0,.12); }
+
+  /* ---------- Spalten ---------- */
+  .dashboard-layout {
+    flex: 1; min-height: 0; display: grid; gap: var(--pane-gap);
+    grid-template-columns: minmax(0, 62fr) minmax(300px, 50fr) minmax(230px, 30fr);
+    padding: var(--pane-gap);
+  }
+  .pane {
+    min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 12px 14px 24px;
+    background: var(--surface); border-radius: var(--pane-radius); box-shadow: var(--pane-shadow);
+  }
+  .pane + .pane { border-left: var(--pane-border); }
+  .pane-title { font-size: 16px; margin-bottom: 8px; }
+  .section-title { font-size: 14px; }
+
+  /* ---------- Chart-Spalte ---------- */
+  .quote-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 6px 16px; margin-bottom: 8px; }
+  .instrument { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .instrument-name { font-size: 20px; overflow-wrap: anywhere; }
+  .star-btn { border: none; background: none; box-shadow: none; font-size: 20px; min-width: 36px; padding: 0 4px; color: var(--ink); }
+  .star-btn:hover:not(:disabled) { background: none; }
+  .quote-meta { display: grid; justify-items: end; text-align: right; }
+  #current-price { font-family: var(--font-num); font-size: 20px; font-weight: 600; }
+  #range-change { font-family: var(--font-num); font-size: 13px; }
+  #quote-source { font-size: 12px; color: var(--ink-3); }
+  .chart-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .segmented { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+  .segmented button { border: none; border-radius: 0; box-shadow: none; background: none; min-width: 52px; }
+  .segmented button + button { border-left: 1px solid var(--line); }
+  .segmented button.is-active { background: var(--active-bg); color: var(--active-ink); font-weight: 700; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--ink-2); }
+  .legend i { display: inline-block; width: 16px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 4px; }
+  .legend .sw { width: 12px; height: 12px; border: none; border-radius: 2px; opacity: .6; }
+  .signal-note { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 4px 10px; border-radius: var(--radius); font-weight: 600; }
+  .signal-note.buy { background: color-mix(in srgb, var(--buy) 16%, transparent); color: var(--buy-ink); }
+  .signal-note.sell { background: color-mix(in srgb, var(--sell) 14%, transparent); color: var(--sell-ink); }
+  .chart-stack { display: grid; }
+  .main-chart { display: block; width: 100%; height: var(--chart-h); }
+  .ind-chart { position: relative; border-top: 1px solid var(--line-soft); }
+  .ind-chart svg { display: block; width: 100%; height: var(--ind-h); }
+  .ind-chart.has-ticks svg { height: calc(var(--ind-h) + 18px); }
+  .ind-head {
+    position: absolute; top: 2px; left: 0; right: 0; pointer-events: none;
+    display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-2);
+    padding-left: var(--chart-pad-left, 36px); padding-right: 12px;
+  }
+  .ind-head span { background: color-mix(in srgb, var(--surface) 80%, transparent); padding: 0 3px; border-radius: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .ind-head .ind-current { flex-shrink: 0; }
+  .ind-head .ind-current { font-family: var(--font-num); }
+
+  /* ---------- Filter-Spalte ---------- */
+  .intro { color: var(--ink-2); margin: 0 0 10px; }
+  #preset-bar { position: relative; display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+  #preset-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; text-align: left; }
+  #preset-current { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #watch-preset { border: none; background: none; box-shadow: none; font-size: 18px; min-width: 36px; }
+  #preset-menu { position: absolute; top: 100%; left: 0; right: 0; z-index: 25; margin-top: 4px; max-height: 50vh; overflow-y: auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 12px 32px rgba(0,0,0,.14); }
+  .preset-row { display: flex; align-items: center; gap: 4px; padding: 4px 6px; border-bottom: 1px solid var(--line-soft); cursor: pointer; }
+  .preset-row:hover { background: var(--surface-2); }
+  .preset-row.active { background: var(--active-bg); }
+  .preset-row.active .preset-name { font-weight: 700; }
+  .preset-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .preset-row .row-star { border: none; background: none; box-shadow: none; font-size: 16px; min-width: 32px; padding: 0; }
+  .row-actions { display: flex; gap: 2px; flex-shrink: 0; }
+  .row-actions button { min-width: 30px; padding: 2px 6px; font-size: 12px; }
+
+  .acc { border-top: 1px solid var(--line-soft); padding-top: 10px; margin-top: 10px; }
+  .acc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .acc-toggle { display: none; align-items: center; justify-content: center; }
+  .acc.is-collapsed .acc-toggle { transform: rotate(-90deg); }
+  .acc-summary { color: var(--ink-3); font-size: 12px; }
+  .field-label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 10px 0 4px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 2px 10px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface); cursor: pointer; }
+  .chip:has(input:checked) { background: var(--active-bg); border-color: var(--active-ink); color: var(--active-ink); }
+  #watch-ranges.needs-range .chips { outline: 2px solid #f59e0b; outline-offset: 4px; border-radius: 6px; }
+  #watch-range-hint { color: var(--warn); font-size: 12px; }
+  #watch-symbols { display: flex; flex-direction: column; gap: 4px; }
+  #watch-symbols .indent { margin-left: 20px; }
+  #watch-symbol-hint { color: var(--ink-3); font-size: 12px; margin-top: 4px; }
+  #watched-filters, #config-sync-hint { font-size: 12px; margin-top: 8px; }
+  #watched-filters { color: var(--ink-2); }
+  #config-sync-hint { color: var(--warn); }
+  #config-sync-hint:empty { display: none; }
+
+  .indicator-card { border: 1px solid var(--line-soft); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 8px; background: var(--surface); }
+  .indicator-card.is-off { border-style: dashed; }
+  .indicator-card.is-off .indicator-body { display: none; }
+  .indicator-card.is-off .indicator-title::after { content: "aus"; margin-left: 6px; font-size: 11px; font-weight: 400; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; }
+  .card-head { display: flex; align-items: center; gap: 8px; }
+  .indicator-title { flex: 1; min-width: 0; font-weight: 600; }
+  .link-btn { border: none; background: none; box-shadow: none; color: var(--ink-3); font-size: 12px; min-height: 28px; padding: 0 4px; }
+  .link-btn:hover:not(:disabled) { background: none; color: var(--ink); }
+  .indicator-body { display: grid; gap: 6px; margin: 6px 0 2px 24px; }
+  .setting-hint { color: var(--ink-2); font-size: 12px; }
+  .setting-row { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+  .dir-row { color: var(--ink-2); font-size: 12px; }
+  .archived-head { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line-soft); color: var(--ink-2); font-size: 12px; }
+  .archived-row { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 4px; color: var(--ink-3); font-size: 12px; }
+
+  /* ---------- Favoriten ---------- */
+  .fav-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  #favorites-list { list-style: none; padding: 0; margin: 0; }
+  .favorite-item { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--line-soft); }
+  .favorite-item.is-current { background: var(--active-bg); }
+  .fav-link { flex: 1; min-width: 0; display: grid; color: var(--ink); text-decoration: none; padding: 4px 2px; cursor: pointer; }
+  .fav-symbol { font-family: var(--font-num); font-size: 11px; color: var(--ink-3); }
+  .fav-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .fav-actions { display: flex; gap: 2px; flex-shrink: 0; }
+  .fav-actions button { min-width: 32px; padding: 2px 6px; }
+  .fav-edit-only, .favorite-item .drag-handle { display: none; }
+  #favorites-list.is-editing .fav-edit-only, #favorites-list.is-editing .drag-handle { display: inline-flex; }
+  #favorites-list.is-editing .notify-btn { display: none; }
+  .notify-btn { border: none; background: none; box-shadow: none; font-size: 16px; }
+  .notify-btn.off { opacity: .55; }
+
+  /* ---------- Ziehen ---------- */
+  .drag-handle { cursor: grab; color: var(--ink-3); user-select: none; touch-action: none; flex-shrink: 0; min-width: 20px; display: inline-flex; justify-content: center; }
+  .dragging { opacity: .4; }
+  .drag-over-top { box-shadow: inset 0 2px 0 var(--accent); }
+  .drag-over-bottom { box-shadow: inset 0 -2px 0 var(--accent); }
+
+  /* ---------- Tab-Leiste (nur App-Modus) ---------- */
+  .tabbar { display: none; }
+
+  /* ---------- Tablet: zwei Spalten ---------- */
+  @media (max-width: 1099px) and (min-width: 760px) {
+    .dashboard-layout { grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr); grid-template-rows: minmax(0, 1.4fr) minmax(0, 1fr); }
+    .pane-chart { grid-row: 1 / span 2; }
+    .pane-favorites { border-top: var(--pane-border); }
+  }
+
+  /* ---------- Handy: App mit drei Tabs ---------- */
+  @media (max-width: 759px) {
+    :root { --chart-h: 240px; --ind-h: 76px; }
+    body { font-size: 15px; }
+    .topbar { gap: 8px; padding-inline: 10px; }
+    .brand-name, .bell-label, #notifications-status { display: none; }
+    .search { flex: 1 1 auto; }
+    button, input[type="text"], input[type="number"], select, .chip { min-height: 44px; }
+    button.icon, .star-btn, #watch-preset, .notify-btn, .row-actions button, .fav-actions button, .row-star { min-width: 44px; }
+    .dashboard-layout { display: block; padding: 0; }
+    .pane { display: none; height: 100%; padding: 12px 14px calc(var(--tabbar-h) + 24px + env(safe-area-inset-bottom, 0px)); border-radius: 0; box-shadow: none; }
+    .pane + .pane { border-left: none; }
+    body[data-tab="chart"] .pane-chart,
+    body[data-tab="filter"] .pane-filter,
+    body[data-tab="favorites"] .pane-favorites { display: block; }
+    .segmented { display: grid; grid-template-columns: repeat(6, 1fr); width: 100%; }
+    .segmented button { min-width: 0; padding-inline: 2px; }
+    .acc-toggle { display: inline-flex; }
+    .acc.is-collapsed .acc-body { display: none; }
+    .popover { position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto; max-width: none; max-height: 82dvh; margin: 0; border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); box-shadow: 0 -12px 48px rgba(0,0,0,.28); }
+    .panel-head { flex-wrap: wrap; }
+    .panel-head .actions { width: 100%; justify-content: stretch; }
+    .panel-head .actions button { flex: 1; }
+    .quote-head { display: grid; }
+    .quote-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; text-align: left; }
+    .quote-meta #quote-source { flex-basis: 100%; }
+    .segmented button { font-size: 14px; }
+    #design-menu { width: auto; }
+    .tabbar {
+      display: grid; grid-template-columns: repeat(3, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 15;
+      height: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px)); padding-bottom: env(safe-area-inset-bottom, 0px);
+      background: var(--surface); border-top: 1px solid var(--line);
+    }
+    .tabbar button { border: none; border-radius: 0; box-shadow: none; background: none; display: grid; justify-items: center; align-content: center; gap: 2px; font-size: 12px; color: var(--ink-2); }
+    .tabbar button svg { width: 22px; height: 22px; }
+    .tabbar button[aria-current="page"] { color: var(--active-ink); font-weight: 700; }
+    .favorite-item { min-height: 56px; }
+  }
+
+  @media (hover: hover) and (min-width: 760px) {
+    .favorite-item:hover .fav-edit-only { display: inline-flex; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    button, .chip, .tabbar button { transition: background-color .15s, color .15s, border-color .15s; }
+  }
 </style>
 </head>
-<body>
-  <div style="position: relative; display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid #eee; flex: 0 0 auto;">
-    <div style="position: relative; max-width: 600px; flex: 1 1 600px; margin-right: auto;">
-      <input id="symbol-search" type="text" placeholder="Aktie oder ETF suchen (z.B. MSCI World)" style="width: 100%; box-sizing: border-box;">
-      <ul id="suggestions" style="list-style: none; margin: 0; padding: 0; position: absolute; width: 100%; background: white; border: 1px solid #ccc; display: none;"></ul>
+<body data-tab="chart">
+  <header class="topbar">
+    <div class="brand"><img src="/icon.png" alt=""><span class="brand-name">Aktienanalyse</span></div>
+    <div class="search">
+      <input id="symbol-search" type="text" placeholder="Aktie oder ETF suchen" autocomplete="off" aria-label="Aktie oder ETF suchen">
+      <ul id="suggestions" style="display: none;"></ul>
     </div>
-    <span id="notifications-status" style="font-size: 11px; color: #999;"></span>
-    <button id="notifications-toggle" type="button" style="cursor: pointer; font-size: 13px; padding: 6px 24px; white-space: nowrap;">
-      🔔 Benachrichtigungen <span id="notifications-badge" style="display: none; background: #dc2626; color: white; border-radius: 8px; padding: 0 5px; font-size: 11px;"></span>
-    </button>
-    <div id="notifications-panel" style="display: none; position: absolute; top: 100%; right: 8px; width: 480px; max-width: calc(100vw - 16px); max-height: 65vh; overflow-y: auto; background: white; border: 1px solid #ccc; box-shadow: 0 2px 6px rgba(0,0,0,0.15); z-index: 10;">
-      <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-bottom: 1px solid #eee; position: sticky; top: 0; background: white;">
-        <strong style="font-size: 12px;">Benachrichtigungen</strong>
-        <span>
-          <button id="notifications-mail-test" type="button" title="Testmail an die eingetragene Adresse schicken">Test-Mail</button>
-          <button id="notifications-mark-read" type="button" title="Alle als gelesen markieren">Gelesen</button>
+    <div class="topbar-actions">
+      <span id="notifications-status"></span>
+      <button id="design-toggle" type="button" class="icon" title="Aussehen" aria-label="Aussehen wählen">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.9-.7-1.3-.7-2.2 0-1 .8-1.7 1.8-1.7H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3Z"/><circle cx="7.5" cy="11" r="1.2" fill="currentColor"/><circle cx="10.5" cy="7.2" r="1.2" fill="currentColor"/><circle cx="15" cy="7.4" r="1.2" fill="currentColor"/></svg>
+      </button>
+      <button id="notifications-toggle" type="button" title="Benachrichtigungen">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15Z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+        <span class="bell-label">Benachrichtigungen</span>
+        <span id="notifications-badge" style="display: none;"></span>
+      </button>
+    </div>
+    <div id="design-menu" class="popover" style="display: none;" role="dialog" aria-label="Aussehen">
+      <strong>Aussehen</strong>
+      <span class="small muted">Gilt auf allen Geräten.</span>
+    </div>
+    <div id="notifications-panel" class="popover" style="display: none;">
+      <div class="panel-head">
+        <strong>Benachrichtigungen</strong>
+        <span class="actions">
+          <button id="notifications-mail-test" type="button" class="ghost" title="Testmail an die eingetragene Adresse schicken">Test-Mail</button>
           <button id="notifications-clear" type="button" title="Alle löschen">Löschen</button>
+          <button id="notifications-mark-read" type="button" class="primary" title="Alle als gelesen markieren">Gelesen</button>
         </span>
       </div>
-      <div id="notifications-mail-result" style="display: none; padding: 6px 8px; font-size: 11px; border-bottom: 1px solid #eee; word-break: break-word;"></div>
-      <ul id="notifications-list" style="list-style: none; margin: 0; padding: 0;"></ul>
+      <div id="notifications-mail-result" style="display: none;"></div>
+      <ul id="notifications-list"></ul>
     </div>
-  </div>
+  </header>
 
-  <div class="dashboard-layout" style="display: flex; align-items: flex-start; flex: 1; min-height: 0;">
-    <div style="flex: 624 1 0; min-width: 0; padding: 8px 16px 8px 8px; box-sizing: border-box; height: 100%; overflow-y: auto; overflow-x: hidden;">
-
-      <p>Ausgewählt: <span id="selected-instrument">iShares Core S&P 500 UCITS ETF USD (Acc) (SXR8.DE)</span>
-        <button id="favorite-star" type="button" title="Zu Favoriten" style="background: none; border: none; cursor: pointer; font-size: 18px; line-height: 1; vertical-align: middle; padding: 0;">☆</button>
-      </p>
-
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-        <div id="range-buttons">
+  <main class="dashboard-layout">
+    <section class="pane pane-chart" aria-label="Chart">
+      <div class="quote-head">
+        <div class="instrument">
+          <h1 id="selected-instrument" class="instrument-name">iShares Core S&amp;P 500 UCITS ETF USD (Acc) (SXR8.DE)</h1>
+          <button id="favorite-star" type="button" class="star-btn" title="Zu Favoriten">☆</button>
+        </div>
+        <div class="quote-meta">
+          <div id="current-price"></div>
+          <div id="range-change"></div>
+          <!-- Von welcher Börse der letzte Kurs stammt und wie alt er ist. Morgens ist
+               das ein deutscher Platz, ab 10:00 die Vorbörse der Heimatbörse. -->
+          <div id="quote-source"></div>
+        </div>
+      </div>
+      <div class="chart-toolbar">
+        <div id="range-buttons" class="segmented" role="group" aria-label="Zeitraum">
           <button type="button" data-range="1d">Tag</button>
           <button type="button" data-range="5d">Woche</button>
           <button type="button" data-range="1mo">Monat</button>
@@ -76,58 +398,63 @@
           <button type="button" data-range="5y">5 Jahre</button>
           <button type="button" data-range="10y">10 Jahre</button>
         </div>
-        <div style="text-align: right;">
-          <div id="range-change"></div>
-          <div id="current-price" style="font-size: 11px; color: #666;"></div>
-          <!-- Von welcher Börse der letzte Kurs stammt und wie alt er ist. Morgens ist
-               das ein deutscher Platz, ab 10:00 die Vorbörse der Heimatbörse. -->
-          <div id="quote-source" style="font-size: 10px; color: #999;"></div>
+        <div class="legend" aria-hidden="true">
+          <span><i style="border-color: var(--c-ema50)"></i>EMA 50</span>
+          <span><i style="border-color: var(--c-ema200)"></i>EMA 200</span>
+          <span><i class="sw" style="background: var(--buy)"></i>Kauf</span>
+          <span><i class="sw" style="background: var(--sell)"></i>Verkauf</span>
         </div>
       </div>
-      <svg id="chart" viewBox="0 0 600 220" style="width: 100%; height: auto; display: block;"></svg>
-      <div id="data-warning" style="font-size: 11px; color: #b45309;"></div>
+      <div id="signal-note" class="signal-note" hidden></div>
+      <div id="data-warning" class="warning"></div>
+      <div class="chart-stack">
+        <svg id="chart" class="main-chart" role="img" aria-label="Kursverlauf"></svg>
+        <!-- Indikator-Charts werden aus der Registry erzeugt (renderIndicatorChartSkeletons). -->
+        <div id="indicator-charts"></div>
+      </div>
+    </section>
 
-      <!-- Indikator-Charts werden aus der Registry erzeugt (renderIndicatorChartSkeletons). -->
-      <div id="indicator-charts"></div>
-    </div>
-
-    <aside class="bar-settings-column" style="flex: 500 1 0; min-width: 300px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; height: 100%; overflow-y: auto; overflow-x: hidden;">
-      <section class="bar-settings" style="padding-bottom: 24px; min-height: 25vh; font-size: 13px;">
-        <h2 style="font-size: 14px; margin: 0 0 8px;">Balken-Einstellungen</h2>
-        <div style="color: #666; margin-bottom: 6px;">Aktivierte Indikatoren müssen gemeinsam ausschlagen. Gilt für alle Werte.</div>
-        <!-- Eigenes Dropdown statt <select>: <option> kann keinen Stern, keine Knöpfe und
-             keinen Ziehgriff tragen. Die Zeilen erzeugt renderPresetPicker. Das Menü hängt
-             bewusst an der ganzen Leiste (nicht nur am Knopf): die Spalte ist schmal und
-             schneidet Überstehendes ab (overflow-x: hidden). -->
-        <div id="preset-bar" style="position: relative; display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
-          <button id="preset-toggle" type="button" title="Filter wählen, überwachen, löschen und sortieren"
-                  style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; text-align: left; cursor: pointer;">
-            <span id="preset-current" style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
-            <span style="flex-shrink: 0;">▾</span>
-          </button>
-          <button id="watch-preset" type="button" title="Diesen Filter überwachen (danach Zeitfenster anhaken)" style="background: none; border: none; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px;">☆</button>
-          <button id="save-preset" type="button" title="Aktuelle Werte als Variante speichern">Speichern</button>
-          <div id="preset-menu" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #ccc; box-shadow: 0 2px 6px rgba(0,0,0,0.15); z-index: 10; max-height: 45vh; overflow-y: auto;">
-            <!-- "Standard" steht fest oben (nicht sortierbar, nicht löschbar), darunter
-                 die gespeicherten Filter in eigener Reihenfolge. -->
-            <div id="preset-default-row"></div>
-            <div id="preset-rows"></div>
-          </div>
+    <section class="pane pane-filter bar-settings" aria-label="Filter">
+      <h2 class="pane-title">Balken-Einstellungen</h2>
+      <p class="intro small">Aktivierte Indikatoren müssen gemeinsam ausschlagen. Gilt für alle Werte.</p>
+      <!-- Eigenes Dropdown statt <select>: <option> kann keinen Stern, keine Knöpfe und
+           keinen Ziehgriff tragen. Die Zeilen erzeugt renderPresetPicker. Das Menü hängt
+           bewusst an der ganzen Leiste (nicht nur am Knopf): der Außenklick prüft
+           #preset-bar. -->
+      <div id="preset-bar">
+        <button id="preset-toggle" type="button" title="Filter wählen, überwachen, löschen und sortieren">
+          <span id="preset-current"></span>
+          <span aria-hidden="true">▾</span>
+        </button>
+        <button id="watch-preset" type="button" title="Diesen Filter überwachen (danach Zeitfenster anhaken)">☆</button>
+        <button id="save-preset" type="button" class="primary" title="Aktuelle Werte als Variante speichern">Speichern</button>
+        <div id="preset-menu" style="display: none;">
+          <!-- "Standard" steht fest oben (nicht sortierbar, nicht löschbar), darunter
+               die gespeicherten Filter in eigener Reihenfolge. -->
+          <div id="preset-default-row"></div>
+          <div id="preset-rows"></div>
         </div>
-        <div id="watch-ranges" style="color: #666; font-size: 11px; margin-bottom: 4px;">
-          <div style="margin-bottom: 2px;">Überwachen in diesen Zeitfenstern:</div>
-          <div id="watch-range-hint" style="color: #b45309; margin-bottom: 2px;"></div>
-          <div style="display: flex; flex-wrap: wrap; gap: 2px 10px;">
-            <label><input type="checkbox" data-watch-range="1d"> Tag</label>
-            <label><input type="checkbox" data-watch-range="5d"> Woche</label>
-            <label><input type="checkbox" data-watch-range="1mo"> Monat</label>
-            <label><input type="checkbox" data-watch-range="1y"> Jahr</label>
-            <label><input type="checkbox" data-watch-range="5y"> 5 Jahre</label>
-            <label><input type="checkbox" data-watch-range="10y"> 10 Jahre</label>
-          </div>
-          <div style="margin-top: 4px; display: flex; align-items: center; gap: 6px;">
-            <span>Erst benachrichtigen nach:</span>
-            <select id="watch-delay-select" style="font-size: 11px;">
+      </div>
+
+      <div class="acc" data-acc="watch">
+        <div class="acc-head">
+          <h3 class="section-title">Überwachung</h3>
+          <button type="button" class="acc-toggle icon" aria-expanded="true" aria-label="Überwachung auf- oder zuklappen">▾</button>
+        </div>
+        <div class="acc-body">
+          <div id="watch-ranges">
+            <span class="field-label">Überwachen in diesen Zeitfenstern</span>
+            <div id="watch-range-hint"></div>
+            <div class="chips">
+              <label class="chip"><input type="checkbox" data-watch-range="1d"> Tag</label>
+              <label class="chip"><input type="checkbox" data-watch-range="5d"> Woche</label>
+              <label class="chip"><input type="checkbox" data-watch-range="1mo"> Monat</label>
+              <label class="chip"><input type="checkbox" data-watch-range="1y"> Jahr</label>
+              <label class="chip"><input type="checkbox" data-watch-range="5y"> 5 Jahre</label>
+              <label class="chip"><input type="checkbox" data-watch-range="10y"> 10 Jahre</label>
+            </div>
+            <label class="field-label" for="watch-delay-select">Erst benachrichtigen nach</label>
+            <select id="watch-delay-select">
               <option value="0">Sofort</option>
               <option value="1">1 Tag</option>
               <option value="2">2 Tagen</option>
@@ -135,27 +462,48 @@
               <option value="7">7 Tagen</option>
               <option value="14">14 Tagen</option>
             </select>
+            <!-- Werte-Auswahl wird aus den Favoriten erzeugt (renderWatchSymbols). -->
+            <span class="field-label">Nur für diese Werte</span>
+            <div id="watch-symbols"></div>
+            <div id="watch-symbol-hint"></div>
           </div>
-          <!-- Werte-Auswahl wird aus den Favoriten erzeugt (renderWatchSymbols). -->
-          <div style="margin-top: 4px;">Nur für diese Werte:</div>
-          <div id="watch-symbols" style="display: flex; flex-direction: column; gap: 2px; margin-top: 2px;"></div>
-          <div id="watch-symbol-hint" style="margin-top: 3px; color: #999;"></div>
+          <div id="watched-filters"></div>
+          <!-- Warnt, wenn der Server etwas anderes überwacht als hier steht
+               (checkWatchlistDivergence) oder ein anderes Gerät schneller war. -->
+          <div id="config-sync-hint"></div>
         </div>
-        <div id="watched-filters" style="color: #666; font-size: 11px; margin-bottom: 8px;"></div>
-        <!-- Warnt, wenn der Server etwas anderes überwacht als hier steht
-             (checkWatchlistDivergence) oder ein anderes Gerät schneller war. Ohne das
-             bleibt ein Auseinanderlaufen unsichtbar, bis eine unerwartete Mail kommt. -->
-        <div id="config-sync-hint" style="color: #b45309; font-size: 11px; margin-bottom: 8px;"></div>
-        <!-- Einstellungen je Indikator werden aus der Registry erzeugt (renderIndicatorSettings). -->
-        <div id="indicator-settings"></div>
-      </section>
-    </aside>
+      </div>
 
-    <aside class="favorites-column" style="flex: 300 1 0; min-width: 230px; box-sizing: border-box; border-left: 1px solid #ccc; padding: 8px; height: 100%; overflow-y: auto; overflow-x: hidden;">
-      <h2 style="font-size: 14px; margin-top: 0;">Favoriten</h2>
-      <ul id="favorites-list" style="list-style: none; padding: 0; margin: 0;"></ul>
-    </aside>
-  </div>
+      <div class="acc is-collapsed" data-acc="indicators">
+        <div class="acc-head">
+          <h3 class="section-title">Indikatoren</h3>
+          <button type="button" class="acc-toggle icon" aria-expanded="false" aria-label="Indikatoren auf- oder zuklappen">▾</button>
+        </div>
+        <!-- Einstellungen je Indikator werden aus der Registry erzeugt (renderIndicatorSettings). -->
+        <div class="acc-body"><div id="indicator-settings"></div></div>
+      </div>
+    </section>
+
+    <section class="pane pane-favorites" aria-label="Favoriten">
+      <div class="fav-head">
+        <h2 class="pane-title">Favoriten</h2>
+        <button id="favorites-edit" type="button" aria-pressed="false">Bearbeiten</button>
+      </div>
+      <ul id="favorites-list"></ul>
+    </section>
+  </main>
+
+  <nav class="tabbar" aria-label="Bereiche">
+    <button type="button" data-tab-target="chart" aria-current="page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 20h18"/><path d="m4 15 5-5 4 3 7-7"/></svg>Chart
+    </button>
+    <button type="button" data-tab-target="filter">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Filter
+    </button>
+    <button type="button" data-tab-target="favorites">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="m12 3 2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9Z"/></svg>Favoriten
+    </button>
+  </nav>
 
     <script>
       // Deep-Link aus der Mail: einmal beim Start festhalten. applyDeepLink() laeuft
@@ -204,6 +552,26 @@
       // ---------------------------------------------------------------------
       function sig(buy, sell) { return buy ? 'green' : (sell ? 'red' : null); }
 
+      // Chart-Farben kommen aus den CSS-Variablen des gewählten Designs (siehe <style>).
+      // readTheme() liest sie neu, sobald das Design wechselt; die Werte hier sind nur der
+      // Rückfall, falls der Browser Variablen nicht auflöst.
+      const THEME_VARS = {
+        buy: ['--buy', '#16a34a'], sell: ['--sell', '#dc2626'], buyInk: ['--buy-ink', '#15803d'],
+        sellInk: ['--sell-ink', '#b91c1c'], barOpacity: ['--bar-opacity', '0.26'],
+        price: ['--c-price', '#4682b4'], ema50: ['--c-ema50', '#d97706'], ema200: ['--c-ema200', '#7c3aed'],
+        axis: ['--c-axis', '#9aa1ab'], tick: ['--c-tick', '#5b6270'], ref: ['--c-ref', '#c7ccd3'],
+        zero: ['--c-zero', '#dde1e6'], fg: ['--c-fg', '#b8860b'], sd: ['--c-sd', '#7c828c'],
+        rsi: ['--c-rsi', '#7e22ce'], pma: ['--c-pma', '#0f766e'], macd: ['--c-macd', '#2563eb'],
+        macdSignal: ['--c-macd-signal', '#ea580c'], muted: ['--ink-3', '#6b7280'],
+      };
+      let THEME = {};
+      function readTheme() {
+        const styles = getComputedStyle(document.documentElement);
+        THEME = Object.fromEntries(Object.entries(THEME_VARS).map(([key, [name, fallback]]) =>
+          [key, (styles.getPropertyValue(name) || '').trim() || fallback]));
+      }
+      readTheme();
+
       const INDICATORS = [
         {
           key: 'feargreed', enabledKey: 'useFearGreed', title: 'Fear & Greed Index',
@@ -225,7 +593,7 @@
             return {
               series,
               signals: series.map(v => (v == null ? null : sig(v <= s.fearGreedBuy, v >= s.fearGreedSell))),
-              chart: { fixedMin: 0, fixedMax: 100, color: 'goldenrod', formatValue: v => v.toFixed(0),
+              chart: { fixedMin: 0, fixedMax: 100, color: THEME.fg, formatValue: v => v.toFixed(0),
                        referenceLines: [s.fearGreedBuy, s.fearGreedSell] },
               // Der aktuelle F&G-Text (Score + Rating) wird aus /api/data gesetzt -> hier nicht überschreiben.
               currentText: undefined,
@@ -253,9 +621,9 @@
             return {
               series: spread,
               signals: spread.map(v => (v == null ? null : sig(v >= s.smartDumbBuy, v <= s.smartDumbSell))),
-              chart: { fixedMin: -100, fixedMax: 100, signedArea: true, color: '#888',
+              chart: { fixedMin: -100, fixedMax: 100, signedArea: true, color: THEME.sd,
                        formatValue: v => `${v > 0 ? '+' : ''}${v.toFixed(0)}`,
-                       referenceLines: [{ value: 0, stroke: '#ddd', dashed: false }, s.smartDumbBuy, s.smartDumbSell] },
+                       referenceLines: [{ value: 0, stroke: THEME.zero, dashed: false }, s.smartDumbBuy, s.smartDumbSell] },
               currentText: latest
                 ? `Smart ${latest.smart.toFixed(0)} / Dumb ${latest.dumb.toFixed(0)}`
                   + ` (Spread ${latest.spread > 0 ? '+' : ''}${latest.spread.toFixed(0)})`
@@ -283,7 +651,7 @@
             return {
               series: ctx.rsi,
               signals: (ctx.rsi || []).map(v => (v == null ? null : sig(v <= s.rsiBuy, v >= s.rsiSell))),
-              chart: { fixedMin: 0, fixedMax: 100, color: 'purple', formatValue: v => v.toFixed(0),
+              chart: { fixedMin: 0, fixedMax: 100, color: THEME.rsi, formatValue: v => v.toFixed(0),
                        referenceLines: [s.rsiBuy, s.rsiSell] },
               currentText: lv != null ? lv.toFixed(1) : '',
             };
@@ -311,9 +679,9 @@
             const distance = ctx.priceVsMaPctStd != null ? ctx.priceVsMaPctStd * s.pmaStdMultiplier : null;
             const upper = (trend && distance != null) ? trend.map(v => (v != null ? v + distance : null)) : null;
             const lower = (trend && distance != null) ? trend.map(v => (v != null ? v - distance : null)) : null;
-            const overlays = [{ series: trend, color: '#ccc' }];
-            if (upper) overlays.push({ series: upper, color: '#ccc' });
-            if (lower) overlays.push({ series: lower, color: '#ccc' });
+            const overlays = [{ series: trend, color: THEME.ref }];
+            if (upper) overlays.push({ series: upper, color: THEME.ref });
+            if (lower) overlays.push({ series: lower, color: THEME.ref });
             const signals = (ctx.priceVsMaPct || []).map((v, i) =>
               (upper && lower && v != null && upper[i] != null && lower[i] != null)
                 ? sig(v < lower[i], v > upper[i]) : null);
@@ -322,7 +690,7 @@
             return {
               series: ctx.priceVsMaPct,
               signals,
-              chart: { color: 'teal', overlays, formatValue: pmaFormat },
+              chart: { color: THEME.pma, overlays, formatValue: pmaFormat },
               currentText: lastPma != null
                 ? `${lastPma > 0 ? '+' : ''}${lastPma.toFixed(2)}%`
                   + (avg != null ? ` (Ø: ${avg > 0 ? '+' : ''}${avg.toFixed(2)}%)` : '')
@@ -363,13 +731,13 @@
               series: histogram,
               signals: histogram.map(v => (v == null ? null : sig(v >= s.macdBuy, v <= s.macdSell))),
               chart: {
-                fixedMin: domainMin, fixedMax: domainMax, signedArea: true, color: '#888',
+                fixedMin: domainMin, fixedMax: domainMax, signedArea: true, color: THEME.sd,
                 overlays: [
-                  { series: macd, color: '#2563eb', dashed: false },
-                  { series: signal, color: '#ea580c', dashed: false },
+                  { series: macd, color: THEME.macd, dashed: false },
+                  { series: signal, color: THEME.macdSignal, dashed: false },
                 ],
                 formatValue: v => v.toFixed(2),
-                referenceLines: [{ value: 0, stroke: '#ddd', dashed: false }],
+                referenceLines: [{ value: 0, stroke: THEME.zero, dashed: false }],
               },
               currentText: (lastMacd != null && lastSignal != null)
                 ? `MACD ${lastMacd.toFixed(2)} / Signal ${lastSignal.toFixed(2)}`
@@ -416,9 +784,9 @@
               chart: {
                 fixedMin: bounds.length ? Math.min(...bounds) : undefined,
                 fixedMax: bounds.length ? Math.max(...bounds) : undefined,
-                signedArea: true, color: '#888',
+                signedArea: true, color: THEME.sd,
                 formatValue: v => `${v > 0 ? '+' : ''}${v.toFixed(0)}`,
-                referenceLines: [{ value: 0, stroke: '#ddd', dashed: false }, s.sdChangeBuy, s.sdChangeSell],
+                referenceLines: [{ value: 0, stroke: THEME.zero, dashed: false }, s.sdChangeBuy, s.sdChangeSell],
               },
               currentText: (last != null && thenIdx >= 0)
                 ? `${last > 0 ? '+' : ''}${last.toFixed(1)} in ${Math.max(1, Math.round(s.sdChangeWeeks))} Wochen`
@@ -573,14 +941,11 @@
         const row = document.createElement('div');
         row.className = 'preset-row' + (name === selected ? ' active' : '');
         row.dataset.presetName = name;
-        row.style.cssText = 'display: flex; align-items: center; gap: 2px; padding: 3px 4px;'
-          + ' border-bottom: 1px solid #f0f0f0; cursor: pointer;';
         row.addEventListener('click', () => selectPreset(name));
 
         const handle = document.createElement('span');
         handle.className = 'drag-handle';
         handle.textContent = '⠿';
-        handle.style.marginRight = '2px';
         if (fixed) {
           handle.style.visibility = 'hidden';
         } else {
@@ -594,7 +959,7 @@
         star.type = 'button';
         star.textContent = watched ? '★' : '☆';
         star.title = watched ? 'Überwachung beenden' : 'Diesen Filter überwachen (danach Zeitfenster anhaken)';
-        star.style.cssText = 'background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; flex-shrink: 0;';
+        star.className = 'row-star';
         star.addEventListener('click', event => {
           event.stopPropagation();
           toggleWatchedFilter(name);
@@ -604,14 +969,13 @@
         const label = document.createElement('span');
         label.textContent = name;
         label.title = name;
-        label.style.cssText = 'flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;'
-          + ' white-space: nowrap; font-size: 13px;' + (name === selected ? ' font-weight: bold;' : '');
+        label.className = 'preset-name';
         row.appendChild(label);
 
         if (fixed) return row;
 
         const actions = document.createElement('span');
-        actions.style.cssText = 'display: flex; flex-shrink: 0; margin-left: 4px;';
+        actions.className = 'row-actions';
         [{ text: '↑', title: 'Nach oben', dir: -1, off: index === 0 },
          { text: '↓', title: 'Nach unten', dir: 1, off: index === total - 1 }].forEach(spec => {
           const btn = document.createElement('button');
@@ -619,8 +983,6 @@
           btn.textContent = spec.text;
           btn.title = spec.title;
           btn.disabled = spec.off;
-          // Kompakt, damit in der schmalen Spalte möglichst viel Platz für den Namen bleibt.
-          btn.style.cssText = 'margin-left: 2px; font-size: 11px; padding: 0 4px;';
           btn.addEventListener('click', event => {
             event.stopPropagation();
             movePreset(name, spec.dir);
@@ -632,7 +994,6 @@
         removeBtn.type = 'button';
         removeBtn.textContent = '×';
         removeBtn.title = 'Filter löschen';
-        removeBtn.style.cssText = 'margin-left: 2px; font-size: 11px; padding: 0 4px;';
         removeBtn.addEventListener('click', event => {
           event.stopPropagation();
           deletePreset(name);
@@ -919,55 +1280,45 @@
       // targetId, placeBefore) führt die eigentliche Umsortierung/Persistenz durch.
       // handleSelector (optional): Nur ein Ziehen an diesem Griff startet den Drag —
       // Klicks/Eingaben in Feldern, Links und Buttons bleiben so unberührt.
+      // Umsortieren per Ziehen am Griff. Pointer Events statt HTML5-Drag & Drop: das
+      // funktioniert mit Maus, Stift und Finger gleich (HTML5-Drag gibt es am Handy nicht).
+      // onDrop(gezogeneId, zielId, davor) wie bisher.
       function makeSortable(container, itemSelector, dataAttr, handleSelector, onDrop) {
-        let draggedId = null;
         const clearMarkers = () => container.querySelectorAll('.drag-over-top, .drag-over-bottom')
           .forEach(el => el.classList.remove('drag-over-top', 'drag-over-bottom'));
 
         container.querySelectorAll(itemSelector).forEach(item => {
-          // Mit Griff: Item ist erst ziehbar, wenn der Drag am Griff beginnt.
-          const handle = handleSelector ? item.querySelector(handleSelector) : null;
-          if (handle) {
-            item.draggable = false;
-            handle.addEventListener('mousedown', () => { item.draggable = true; });
-            item.addEventListener('mouseup', () => { item.draggable = false; });
-          } else {
-            item.draggable = true;
-          }
-          item.addEventListener('dragstart', event => {
-            draggedId = item.dataset[dataAttr];
+          const handle = handleSelector ? item.querySelector(handleSelector) : item;
+          if (!handle) return;
+          handle.addEventListener('pointerdown', down => {
+            if (down.button !== 0) return;
+            down.preventDefault();
+            handle.setPointerCapture(down.pointerId);
             item.classList.add('dragging');
-            event.dataTransfer.effectAllowed = 'move';
-            // Firefox startet den Drag nur, wenn dataTransfer gesetzt ist.
-            try { event.dataTransfer.setData('text/plain', draggedId); } catch (e) {}
-          });
-          item.addEventListener('dragend', () => {
-            item.classList.remove('dragging');
-            clearMarkers();
-            draggedId = null;
-            if (handle) item.draggable = false;
-          });
-          item.addEventListener('dragover', event => {
-            if (draggedId == null) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = 'move';
-            const rect = item.getBoundingClientRect();
-            const before = event.clientY < rect.top + rect.height / 2;
-            clearMarkers();
-            if (item.dataset[dataAttr] !== draggedId) {
-              item.classList.add(before ? 'drag-over-top' : 'drag-over-bottom');
-            }
-          });
-          item.addEventListener('drop', event => {
-            if (draggedId == null) return;
-            event.preventDefault();
-            const rect = item.getBoundingClientRect();
-            const before = event.clientY < rect.top + rect.height / 2;
-            const targetId = item.dataset[dataAttr];
-            const dragged = draggedId;
-            clearMarkers();
-            draggedId = null;
-            if (dragged !== targetId) onDrop(dragged, targetId, before);
+            let target = null;
+            let before = true;
+
+            const move = event => {
+              const under = document.elementFromPoint(event.clientX, event.clientY);
+              const over = under && under.closest(itemSelector);
+              clearMarkers();
+              target = over && container.contains(over) && over !== item ? over : null;
+              if (!target) return;
+              const rect = target.getBoundingClientRect();
+              before = event.clientY < rect.top + rect.height / 2;
+              target.classList.add(before ? 'drag-over-top' : 'drag-over-bottom');
+            };
+            const finish = () => {
+              handle.removeEventListener('pointermove', move);
+              handle.removeEventListener('pointerup', finish);
+              handle.removeEventListener('pointercancel', finish);
+              item.classList.remove('dragging');
+              clearMarkers();
+              if (target) onDrop(item.dataset[dataAttr], target.dataset[dataAttr], before);
+            };
+            handle.addEventListener('pointermove', move);
+            handle.addEventListener('pointerup', finish);
+            handle.addEventListener('pointercancel', finish);
           });
         });
       }
@@ -988,7 +1339,7 @@
           card.className = 'indicator-card';
           card.dataset.indicatorKey = ind.key;
           const toggleRow = document.createElement('div');
-          toggleRow.style.cssText = 'display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 3px;';
+          toggleRow.className = 'card-head';
           const handle = document.createElement('span');
           handle.className = 'drag-handle';
           handle.textContent = '⠿';
@@ -996,7 +1347,6 @@
           toggleRow.appendChild(handle);
           const toggle = document.createElement('label');
           toggle.className = 'indicator-title';
-          toggle.style.cssText = 'flex: 1; min-width: 0;';
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.dataset.toggle = ind.enabledKey;
@@ -1008,7 +1358,7 @@
           archiveBtn.dataset.archive = ind.key;
           archiveBtn.textContent = 'archivieren';
           archiveBtn.title = 'Indikator ausblenden (Einstellungen bleiben erhalten)';
-          archiveBtn.style.cssText = 'background: none; border: none; color: #999; font-size: 10px; cursor: pointer; padding: 0; white-space: nowrap;';
+          archiveBtn.className = 'link-btn';
           toggleRow.appendChild(archiveBtn);
           card.appendChild(toggleRow);
 
@@ -1021,7 +1371,7 @@
 
           if (cfg.hint) {
             const hint = document.createElement('div');
-            hint.style.cssText = 'color: #666; margin: 0 0 3px 22px; font-size: 11px;';
+            hint.className = 'setting-hint';
             hint.textContent = cfg.hint;
             body.appendChild(hint);
           }
@@ -1030,7 +1380,7 @@
           // MA-Abweichung für Käufe). Abgewählt zählt der Indikator in dieser Richtung
           // gar nicht mit — er kann sie dann weder auslösen noch verhindern.
           const dirRow = document.createElement('div');
-          dirRow.style.cssText = 'display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin: 0 0 5px 22px; color: #666; font-size: 11px;';
+          dirRow.className = 'setting-row dir-row';
           dirRow.appendChild(document.createTextNode('Gilt für:'));
           [{ key: ind.buyKey, label: 'Kauf' }, { key: ind.sellKey, label: 'Verkauf' }].forEach(dir => {
             const label = document.createElement('label');
@@ -1047,12 +1397,12 @@
           (cfg.rows || []).forEach(row => {
             if (row.block) {
               const label = document.createElement('label');
-              label.style.cssText = 'display: block; margin: 0 0 7px 22px;';
+              label.className = 'setting-row';
               appendSettingField(label, row.field);
               body.appendChild(label);
             } else {
               const line = document.createElement('div');
-              line.style.cssText = 'display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 0 0 7px 22px;';
+              line.className = 'setting-row';
               (row.fields || []).forEach(field => {
                 const label = document.createElement('label');
                 appendSettingField(label, field);
@@ -1067,12 +1417,12 @@
         const archivedIndicators = INDICATORS.filter(ind => archivedKeys.has(ind.key));
         if (archivedIndicators.length) {
           const heading = document.createElement('div');
-          heading.style.cssText = 'margin-top: 10px; padding-top: 8px; border-top: 1px solid #eee; color: #666; font-size: 11px;';
+          heading.className = 'archived-head';
           heading.textContent = `Archivierte Indikatoren (${archivedIndicators.length})`;
           container.appendChild(heading);
           archivedIndicators.forEach(ind => {
             const row = document.createElement('div');
-            row.style.cssText = 'display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-top: 4px; color: #999; font-size: 11px;';
+            row.className = 'archived-row';
             const label = document.createElement('span');
             label.textContent = ind.title;
             row.appendChild(label);
@@ -1080,7 +1430,7 @@
             unarchiveBtn.type = 'button';
             unarchiveBtn.dataset.unarchive = ind.key;
             unarchiveBtn.textContent = 'einblenden';
-            unarchiveBtn.style.cssText = 'background: none; border: none; color: #2563eb; font-size: 10px; cursor: pointer; padding: 0; white-space: nowrap;';
+            unarchiveBtn.className = 'link-btn';
             row.appendChild(unarchiveBtn);
             container.appendChild(row);
           });
@@ -1112,22 +1462,27 @@
         const ns = 'http://www.w3.org/2000/svg';
         const archivedKeys = loadArchivedIndicators();
         // Reihenfolge folgt den Balken-Einstellungen (orderedIndicators).
-        orderedIndicators().filter(ind => !archivedKeys.has(ind.key)).forEach(ind => {
+        const visible = orderedIndicators().filter(ind => !archivedKeys.has(ind.key));
+        visible.forEach((ind, index) => {
+          const wrap = document.createElement('div');
+          // Die Kopfzeile liegt IM Chart und nur der unterste Indikator bekommt eine
+          // Zeitachse — so laufen die Signalbalken ohne Lücke vom Kurschart bis ganz unten.
+          wrap.className = 'ind-chart' + (index === visible.length - 1 ? ' has-ticks' : '');
           const header = document.createElement('div');
-          header.style.cssText = 'font-size: 11px; color: #666; margin-top: 10px; display: flex; justify-content: space-between;';
+          header.className = 'ind-head';
           const title = document.createElement('span');
           if (ind.titleId) title.id = ind.titleId;
           title.textContent = ind.title;
           const current = document.createElement('span');
           current.id = ind.currentId;
+          current.className = 'ind-current';
           header.appendChild(title);
           header.appendChild(current);
           const svg = document.createElementNS(ns, 'svg');
           svg.id = ind.chartId;
-          svg.setAttribute('viewBox', '0 0 600 90');
-          svg.style.cssText = 'width: 100%; height: auto; display: block;';
-          container.appendChild(header);
-          container.appendChild(svg);
+          wrap.appendChild(svg);
+          wrap.appendChild(header);
+          container.appendChild(wrap);
         });
       }
 
@@ -1164,14 +1519,32 @@
 
       // Balken werden für alle aktivierten Indikatoren gezeichnet, wenn sie
       // gleichzeitig in dieselbe Richtung ausschlagen.
-      const HIGHLIGHT_STYLES = {
-        green: { color: '#16a34a', opacity: 0.28, minWidth: 2.5 },
-        red: { color: '#dc2626', opacity: 0.28, minWidth: 2.5 },
-      };
+      // Farben aus dem Design (readTheme). Mindestbreite in echten Pixeln, damit auch ein
+      // Signal von ein, zwei Kerzen am rechten Rand nicht übersehen wird.
+      function highlightStyle(type) {
+        const opacity = Number(THEME.barOpacity) || 0.26;
+        if (type === 'green') return { color: THEME.buy, ink: THEME.buyInk, opacity, minWidth: 5 };
+        if (type === 'red') return { color: THEME.sell, ink: THEME.sellInk, opacity, minWidth: 5 };
+        return null;
+      }
+
+      // Schriftgröße der Achsen in echten Pixeln (die viewBox entspricht der Anzeigegröße).
+      const AXIS_FONT = 11;
+
+      // Breite und Höhe eines SVG in Bildschirm-Pixeln. Ist der Bereich gerade unsichtbar
+      // (anderer Tab am Handy), gilt ein Ersatzwert; der ResizeObserver zeichnet nach,
+      // sobald er sichtbar wird.
+      function svgSize(svg, fallbackWidth, fallbackHeight) {
+        const width = Math.round(svg.clientWidth) || fallbackWidth;
+        const height = Math.round(svg.clientHeight) || fallbackHeight;
+        svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+        return { width, height };
+      }
 
       function renderHighlightRects(svg, ns, rects) {
         rects.forEach(r => {
-          const style = HIGHLIGHT_STYLES[r.type] || { color: '#999', opacity: 0.12 };
+          const style = highlightStyle(r.type);
+          if (!style) return;
           // Einzelne Trigger-Punkte (x1 == x2) wären sonst unsichtbar: auf die
           // Mindestbreite aufziehen und dabei um ihren Zeitpunkt herum zentrieren.
           const width = Math.max(Math.abs(r.x2 - r.x1), style.minWidth || 1);
@@ -1193,8 +1566,8 @@
           const label = document.createElementNS(ns, 'text');
           label.setAttribute('x', padLeft - 4);
           label.setAttribute('y', y + 3);
-          label.setAttribute('font-size', '8');
-          label.setAttribute('fill', '#aaa');
+          label.setAttribute('font-size', String(AXIS_FONT - 1));
+          label.setAttribute('fill', THEME.tick);
           label.setAttribute('text-anchor', 'end');
           label.textContent = formatValue(value);
           svg.appendChild(label);
@@ -1206,14 +1579,14 @@
         svg.innerHTML = '';
         if (!closes || closes.length < 2) return;
 
-        const width = 600, height = 220;
-        const padRight = 10, padTop = 10, padBottom = 30;
+        const { width, height } = svgSize(svg, 600, 300);
+        const padRight = 12, padTop = 10, padBottom = 24;
 
         const min = Math.min(...closes);
         const max = Math.max(...closes);
         const range = (max - min) || 1;
         const formatValue = v => v.toFixed(2);
-        const padLeft = sharedPadLeft != null ? sharedPadLeft : computeLeftPadding(min, max, formatValue, 8, 30);
+        const padLeft = sharedPadLeft != null ? sharedPadLeft : computeLeftPadding(min, max, formatValue, AXIS_FONT, 36);
         const plotWidth = width - padLeft - padRight;
         const plotHeight = height - padTop - padBottom;
 
@@ -1225,9 +1598,11 @@
         const ns = 'http://www.w3.org/2000/svg';
 
         if (highlightRanges && highlightRanges.length) {
+          // Bis zum unteren Rand, damit die Balken nahtlos in die Indikator-Charts übergehen.
           renderHighlightRects(svg, ns, highlightRanges.map(r => ({
-            type: r.type, x1: xAt(r.startIndex), x2: xAt(r.endIndex), y: padTop, height: plotHeight,
+            type: r.type, x1: xAt(r.startIndex), x2: xAt(r.endIndex), y: padTop, height: height - padTop,
           })));
+          renderSignalMarkers(svg, ns, highlightRanges, xAt, padTop + plotHeight);
         }
 
         const yAxis = document.createElementNS(ns, 'line');
@@ -1235,7 +1610,7 @@
         yAxis.setAttribute('y1', padTop);
         yAxis.setAttribute('x2', padLeft);
         yAxis.setAttribute('y2', padTop + plotHeight);
-        yAxis.setAttribute('stroke', 'black');
+        yAxis.setAttribute('stroke', THEME.axis);
         svg.appendChild(yAxis);
 
         const xAxis = document.createElementNS(ns, 'line');
@@ -1243,7 +1618,7 @@
         xAxis.setAttribute('y1', padTop + plotHeight);
         xAxis.setAttribute('x2', padLeft + plotWidth);
         xAxis.setAttribute('y2', padTop + plotHeight);
-        xAxis.setAttribute('stroke', 'black');
+        xAxis.setAttribute('stroke', THEME.axis);
         svg.appendChild(xAxis);
 
         renderYAxisLabels(svg, padLeft, padTop, plotHeight, min, max, formatValue);
@@ -1251,8 +1626,9 @@
         const polyline = document.createElementNS(ns, 'polyline');
         polyline.setAttribute('points', points);
         polyline.setAttribute('fill', 'none');
-        polyline.setAttribute('stroke', 'steelblue');
+        polyline.setAttribute('stroke', THEME.price);
         polyline.setAttribute('stroke-width', '2');
+        polyline.setAttribute('stroke-linejoin', 'round');
         svg.appendChild(polyline);
 
         // Overlay-Linien (z.B. 50er-/200er-EMA) über die Kurslinie legen.
@@ -1268,22 +1644,13 @@
           const line = document.createElementNS(ns, 'polyline');
           line.setAttribute('points', linePoints);
           line.setAttribute('fill', 'none');
-          line.setAttribute('stroke', overlay.color || 'orange');
-          line.setAttribute('stroke-width', '2');
+          line.setAttribute('stroke', overlay.color || THEME.ema50);
+          line.setAttribute('stroke-width', '1.6');
+          if (overlay.dash) line.setAttribute('stroke-dasharray', overlay.dash);
           svg.appendChild(line);
           if (overlay.label) drawnOverlays.push(overlay);
         });
-
-        // Kleine Legende oben links, damit die Linien unterscheidbar sind.
-        drawnOverlays.forEach((overlay, i) => {
-          const legend = document.createElementNS(ns, 'text');
-          legend.setAttribute('x', padLeft + 4);
-          legend.setAttribute('y', padTop + 10 + i * 12);
-          legend.setAttribute('fill', overlay.color || 'orange');
-          legend.setAttribute('font-size', '9');
-          legend.textContent = overlay.label;
-          svg.appendChild(legend);
-        });
+        // Die Legende steht über dem Chart (.legend im HTML), nicht mehr im Plot.
 
         if (timestamps && timestamps.length === closes.length) {
           const tickCount = Math.min(6, timestamps.length);
@@ -1292,8 +1659,9 @@
             const label = document.createElementNS(ns, 'text');
             label.setAttribute('x', xAt(i));
             label.setAttribute('y', padTop + plotHeight + 16);
-            label.setAttribute('font-size', '10');
-            label.setAttribute('text-anchor', 'middle');
+            label.setAttribute('font-size', String(AXIS_FONT));
+            label.setAttribute('fill', THEME.tick);
+            label.setAttribute('text-anchor', t === 0 ? 'start' : (t === tickCount - 1 ? 'end' : 'middle'));
             label.textContent = formatTick(new Date(timestamps[i] * 1000), rangeKey);
             svg.appendChild(label);
           }
@@ -1551,8 +1919,8 @@
         Object.keys(CURRENT_VALUE_IDS).forEach(key => {
           const el = document.getElementById(CURRENT_VALUE_IDS[key]);
           if (!el) return;
-          const style = signals ? HIGHLIGHT_STYLES[signals[key]] : null;
-          el.style.color = style ? style.color : '';
+          const style = signals ? highlightStyle(signals[key]) : null;
+          el.style.color = style ? style.ink : '';
           el.style.fontWeight = style ? '700' : '';
         });
       }
@@ -1575,9 +1943,11 @@
         const highlightRanges = applyMinDelay(rawRanges, data.timestamps, currentWatchDelayDays(), tradingDays);
 
         renderChart(data.closes, data.timestamps, currentRange, [
-          { series: data.ema50, color: '#f59e0b', label: '50 EMA' },
-          { series: data.ema200, color: '#8b5cf6', label: '200 EMA' },
+          { series: data.ema50, color: THEME.ema50, label: '50 EMA', dash: '6 4' },
+          { series: data.ema200, color: THEME.ema200, label: '200 EMA', dash: '2 3' },
         ], sharedChartPadLeft, highlightRanges);
+        document.documentElement.style.setProperty('--chart-pad-left', `${sharedChartPadLeft}px`);
+        renderSignalNote(highlightRanges, data.timestamps);
 
         // Jeden Indikator-Chart aus seinem build()-Ergebnis zeichnen. Archivierte
         // Indikatoren haben kein Chart-Grundgerüst (siehe renderIndicatorChartSkeletons)
@@ -1624,8 +1994,8 @@
         const label = document.createElementNS(ns, 'text');
         label.setAttribute('x', width / 2);
         label.setAttribute('y', height / 2);
-        label.setAttribute('font-size', '11');
-        label.setAttribute('fill', '#999');
+        label.setAttribute('font-size', String(AXIS_FONT));
+        label.setAttribute('fill', THEME.muted);
         label.setAttribute('text-anchor', 'middle');
         label.textContent = 'Nicht genug Historie verfügbar';
         svg.appendChild(label);
@@ -1634,7 +2004,8 @@
       function renderIndicatorChart(svgId, series, timestamps, rangeKey, options = {}) {
         const svg = document.getElementById(svgId);
         svg.innerHTML = '';
-        const width = 600, height = 90;
+        const { width, height } = svgSize(svg, 600, 84);
+        const showTicks = !!(svg.parentElement && svg.parentElement.classList.contains('has-ticks'));
         if (!series || series.length < 2) {
           renderNoDataMessage(svg, width, height);
           return;
@@ -1646,13 +2017,14 @@
           return;
         }
 
-        const padRight = 10, padTop = 6, padBottom = 18;
+        // Oben Platz für die Kopfzeile (.ind-head), unten nur beim untersten Chart eine Zeitachse.
+        const padRight = 12, padTop = 20, padBottom = showTicks ? 22 : 4;
 
         const min = options.fixedMin != null ? options.fixedMin : Math.min(...values);
         const max = options.fixedMax != null ? options.fixedMax : Math.max(...values);
         const range = (max - min) || 1;
         const formatValue = options.formatValue || (v => v.toFixed(1));
-        const padLeft = options.padLeft != null ? options.padLeft : computeLeftPadding(min, max, formatValue, 8, 30);
+        const padLeft = options.padLeft != null ? options.padLeft : computeLeftPadding(min, max, formatValue, AXIS_FONT, 36);
         const plotWidth = width - padLeft - padRight;
         const plotHeight = height - padTop - padBottom;
 
@@ -1675,8 +2047,9 @@
             type: r.type,
             x1: useTimeScale ? xAtTime(r.startTs) : xAt(r.startIndex),
             x2: useTimeScale ? xAtTime(r.endTs) : xAt(r.endIndex),
-            y: padTop,
-            height: plotHeight,
+            // Volle Höhe: die Balken schließen oben und unten an die Nachbar-Charts an.
+            y: 0,
+            height,
           })));
         }
 
@@ -1685,7 +2058,7 @@
         yAxis.setAttribute('y1', padTop);
         yAxis.setAttribute('x2', padLeft);
         yAxis.setAttribute('y2', padTop + plotHeight);
-        yAxis.setAttribute('stroke', 'black');
+        yAxis.setAttribute('stroke', THEME.axis);
         svg.appendChild(yAxis);
 
         const xAxis = document.createElementNS(ns, 'line');
@@ -1693,7 +2066,7 @@
         xAxis.setAttribute('y1', padTop + plotHeight);
         xAxis.setAttribute('x2', padLeft + plotWidth);
         xAxis.setAttribute('y2', padTop + plotHeight);
-        xAxis.setAttribute('stroke', 'black');
+        xAxis.setAttribute('stroke', THEME.axis);
         svg.appendChild(xAxis);
 
         renderYAxisLabels(svg, padLeft, padTop, plotHeight, min, max, formatValue);
@@ -1710,7 +2083,7 @@
           // transparent gezeichnet, addierte sich die Deckkraft an den Überlappungen
           // zu sichtbaren senkrechten Streifen.
           const groups = {};
-          ['#16a34a', '#dc2626'].forEach(color => {
+          [THEME.buy, THEME.sell].forEach(color => {
             const group = document.createElementNS(ns, 'g');
             group.setAttribute('opacity', '0.18');
             groups[color] = group;
@@ -1725,14 +2098,15 @@
             // Leichte Überbreite, damit zwischen den Rechtecken keine hellen Nähte entstehen.
             area.setAttribute('width', step + 0.5);
             area.setAttribute('height', Math.abs(zeroY - y));
-            area.setAttribute('fill', v >= 0 ? '#16a34a' : '#dc2626');
-            groups[v >= 0 ? '#16a34a' : '#dc2626'].appendChild(area);
+            const color = v >= 0 ? THEME.buy : THEME.sell;
+            area.setAttribute('fill', color);
+            groups[color].appendChild(area);
           });
         }
 
         (options.referenceLines || []).forEach(ref => {
           const refValue = typeof ref === 'object' ? ref.value : ref;
-          const stroke = typeof ref === 'object' && ref.stroke ? ref.stroke : '#ccc';
+          const stroke = typeof ref === 'object' && ref.stroke ? ref.stroke : THEME.ref;
           const dashed = !(typeof ref === 'object' && ref.dashed === false);
           if (refValue < min || refValue > max) return;
           const line = document.createElementNS(ns, 'line');
@@ -1741,8 +2115,8 @@
           line.setAttribute('x2', padLeft + plotWidth);
           line.setAttribute('y2', yAt(refValue));
           line.setAttribute('stroke', stroke);
-          line.setAttribute('stroke-width', '1.5');
-          if (dashed) line.setAttribute('stroke-dasharray', '5,3');
+          line.setAttribute('stroke-width', '1');
+          if (dashed) line.setAttribute('stroke-dasharray', '4,3');
           svg.appendChild(line);
         });
 
@@ -1754,7 +2128,7 @@
         const polyline = document.createElementNS(ns, 'polyline');
         polyline.setAttribute('points', points);
         polyline.setAttribute('fill', 'none');
-        polyline.setAttribute('stroke', options.color || 'steelblue');
+        polyline.setAttribute('stroke', options.color || THEME.price);
         polyline.setAttribute('stroke-width', '2');
         svg.appendChild(polyline);
 
@@ -1767,13 +2141,13 @@
           const overlayLine = document.createElementNS(ns, 'polyline');
           overlayLine.setAttribute('points', overlayPoints);
           overlayLine.setAttribute('fill', 'none');
-          overlayLine.setAttribute('stroke', overlay.color || '#ccc');
+          overlayLine.setAttribute('stroke', overlay.color || THEME.ref);
           overlayLine.setAttribute('stroke-width', '1.5');
           if (overlay.dashed !== false) overlayLine.setAttribute('stroke-dasharray', '5,3');
           svg.appendChild(overlayLine);
         });
 
-        if (timestamps && timestamps.length === series.length) {
+        if (showTicks && timestamps && timestamps.length === series.length) {
           if (useTimeScale) {
             const tickCount = 6;
             for (let t = 0; t < tickCount; t++) {
@@ -1802,6 +2176,97 @@
         }
       }
 
+      // ▲/▼ an der Zeitachse unter jedem Signalbalken — so sind Kauf und Verkauf auch
+      // ohne Farbe unterscheidbar (Rot-Grün-Schwäche).
+      function renderSignalMarkers(svg, ns, ranges, xAt, baselineY) {
+        ranges.forEach(r => {
+          const style = highlightStyle(r.type);
+          if (!style) return;
+          const marker = document.createElementNS(ns, 'text');
+          marker.setAttribute('x', xAt(r.endIndex));
+          marker.setAttribute('y', baselineY - 3);
+          marker.setAttribute('font-size', '10');
+          marker.setAttribute('text-anchor', 'middle');
+          marker.setAttribute('fill', style.ink);
+          marker.textContent = r.type === 'green' ? '▲' : '▼';
+          svg.appendChild(marker);
+        });
+      }
+
+      // Hinweis über dem Chart, solange am rechten Rand ein Signal läuft. Jedes Design
+      // gestaltet ihn anders (Zeile, Stempel, grüne Kurskarte) — siehe .signal-note im CSS.
+      function renderSignalNote(ranges, timestamps) {
+        const note = document.getElementById('signal-note');
+        const lastIndex = (timestamps || []).length - 1;
+        const running = (ranges || []).find(r => r.type && r.endIndex === lastIndex);
+        document.body.classList.toggle('signal-buy', !!running && running.type === 'green');
+        document.body.classList.toggle('signal-sell', !!running && running.type === 'red');
+        if (!running) {
+          note.hidden = true;
+          return;
+        }
+        const since = new Date(timestamps[running.startIndex] * 1000);
+        const intraday = ['1d', '5d', '1mo'].includes(currentRange);
+        const sinceText = intraday
+          ? since.toLocaleString('de-DE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+          : since.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        const buy = running.type === 'green';
+        note.className = 'signal-note ' + (buy ? 'buy' : 'sell');
+        note.textContent = `${buy ? '▲ Kaufsignal' : '▼ Verkaufssignal'} seit ${sinceText}`
+          + ` · Filter „${selectedPresetName()}“`;
+        note.hidden = false;
+      }
+
+      // ---------------------------------------------------------------------
+      // App-Modus am Handy: drei Tabs unten. Auf breiten Bildschirmen stehen alle
+      // Bereiche nebeneinander, data-tab wirkt dann nicht (reines CSS, siehe <style>).
+      // ---------------------------------------------------------------------
+      function setTab(name) {
+        document.body.dataset.tab = name;
+        document.querySelectorAll('.tabbar [data-tab-target]').forEach(button => {
+          if (button.dataset.tabTarget === name) button.setAttribute('aria-current', 'page');
+          else button.removeAttribute('aria-current');
+        });
+        // Ein eben sichtbar gewordener Chart hatte Breite 0 — jetzt richtig zeichnen.
+        if (name === 'chart' && lastChartData) requestAnimationFrame(rerenderHighlightCharts);
+      }
+      document.querySelectorAll('.tabbar [data-tab-target]').forEach(button => {
+        button.addEventListener('click', () => setTab(button.dataset.tabTarget));
+      });
+
+      // Akkordeon im Filter-Tab (nur am Handy wirksam, am PC ist alles offen).
+      document.querySelectorAll('.acc').forEach(section => {
+        const toggle = section.querySelector('.acc-toggle');
+        toggle.addEventListener('click', () => {
+          const collapsed = section.classList.toggle('is-collapsed');
+          toggle.setAttribute('aria-expanded', String(!collapsed));
+        });
+      });
+
+      // Favoriten: Sortieren und Löschen erst im Bearbeiten-Modus, sonst bleibt der
+      // ganze Platz für den Namen.
+      let favoritesEditing = false;
+      document.getElementById('favorites-edit').addEventListener('click', event => {
+        favoritesEditing = !favoritesEditing;
+        event.currentTarget.textContent = favoritesEditing ? 'Fertig' : 'Bearbeiten';
+        event.currentTarget.setAttribute('aria-pressed', String(favoritesEditing));
+        renderFavorites();
+      });
+
+      // Charts rechnen in echten Pixeln — bei jeder Größenänderung (Fenster, Drehen,
+      // Tab-Wechsel) neu zeichnen, entprellt.
+      let resizeTimer = null;
+      let lastChartWidth = 0;
+      if (window.ResizeObserver) {
+        new ResizeObserver(entries => {
+          const width = Math.round(entries[0].contentRect.width);
+          if (!width || width === lastChartWidth) return;
+          lastChartWidth = width;
+          clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(() => { if (lastChartData) rerenderHighlightCharts(); }, 120);
+        }).observe(document.querySelector('.chart-stack'));
+      }
+
       // Jede Anfrage bekommt eine Nummer; nur die jüngste darf zeichnen. Sonst überschreibt
       // eine langsame Antwort für das vorige Symbol/Zeitfenster den gerade gewählten Chart.
       let chartRequestId = 0;
@@ -1822,13 +2287,13 @@
           // unterschiedlich breiter Y-Achsen-Zahlen (Kurs, RSI, %) an derselben Stelle beginnen.
           const priceValues = (data.closes || []).filter(v => v != null);
           const mainPadLeft = priceValues.length
-            ? computeLeftPadding(Math.min(...priceValues), Math.max(...priceValues), v => v.toFixed(2), 8, 30)
-            : 30;
+            ? computeLeftPadding(Math.min(...priceValues), Math.max(...priceValues), v => v.toFixed(2), AXIS_FONT, 36)
+            : 36;
           const pmaValues = (data.priceVsMaPct || []).filter(v => v != null);
           const pmaPadLeft = pmaValues.length
-            ? computeLeftPadding(Math.min(...pmaValues), Math.max(...pmaValues), pmaFormat, 8, 30)
-            : 30;
-          const rsiPadLeft = computeLeftPadding(0, 100, v => v.toFixed(0), 8, 30);
+            ? computeLeftPadding(Math.min(...pmaValues), Math.max(...pmaValues), pmaFormat, AXIS_FONT, 36)
+            : 36;
+          const rsiPadLeft = computeLeftPadding(0, 100, v => v.toFixed(0), AXIS_FONT, 36);
           sharedChartPadLeft = Math.max(mainPadLeft, pmaPadLeft, rsiPadLeft);
 
           // Kauf-/Verkaufssignal-Zeiträume, Bänder und alle Charts: eine gemeinsame
@@ -1947,15 +2412,12 @@
             results.forEach(r => {
               const li = document.createElement('li');
               li.textContent = `${r.name} — ${r.symbol} (${r.exchange}, ${r.type})`;
-              li.style.padding = '4px 8px';
-              li.style.cursor = 'pointer';
               li.addEventListener('click', () => {
                 searchInput.value = '';
                 suggestionsList.style.display = 'none';
                 selectSymbol(r.symbol);
+                setTab('chart');
               });
-              li.addEventListener('mouseenter', () => li.style.background = '#eee');
-              li.addEventListener('mouseleave', () => li.style.background = 'white');
               suggestionsList.appendChild(li);
             });
             suggestionsList.style.display = results.length ? 'block' : 'none';
@@ -1971,11 +2433,10 @@
 
       const rangeButtons = document.querySelectorAll('#range-buttons button');
       rangeButtons.forEach(btn => {
-        if (btn.dataset.range === currentRange) btn.style.fontWeight = 'bold';
+        btn.classList.toggle('is-active', btn.dataset.range === currentRange);
         btn.addEventListener('click', () => {
           currentRange = btn.dataset.range;
-          rangeButtons.forEach(b => b.style.fontWeight = 'normal');
-          btn.style.fontWeight = 'bold';
+          rangeButtons.forEach(b => b.classList.toggle('is-active', b === btn));
           loadChart(currentSymbol, currentRange);
         });
       });
@@ -2045,51 +2506,46 @@
       function renderFavorites() {
         const list = document.getElementById('favorites-list');
         list.innerHTML = '';
+        list.classList.toggle('is-editing', favoritesEditing);
         const favs = loadFavorites();
         favs.forEach((fav, index) => {
           const li = document.createElement('li');
-          li.className = 'favorite-item';
+          li.className = 'favorite-item' + (fav.symbol === currentSymbol ? ' is-current' : '');
           li.dataset.index = index;
-          li.style.marginBottom = '6px';
-          li.style.display = 'flex';
-          li.style.justifyContent = 'space-between';
-          li.style.alignItems = 'center';
 
           const handle = document.createElement('span');
           handle.className = 'drag-handle';
           handle.textContent = '⠿';
           handle.title = 'Zum Umsortieren ziehen';
-          handle.style.marginRight = '4px';
 
           const link = document.createElement('a');
           link.href = '#';
+          link.className = 'fav-link';
           link.draggable = false; // sonst zieht der Browser die Link-URL statt der Zeile
-          link.textContent = fav.name || fav.symbol;
           link.title = fav.symbol;
-          link.style.cursor = 'pointer';
-          link.style.fontSize = '13px';
-          link.style.color = 'black';
-          link.style.flex = '1';
-          link.style.overflow = 'hidden';
-          link.style.textOverflow = 'ellipsis';
-          link.style.whiteSpace = 'nowrap';
-          link.style.minWidth = '0';
+          const symbolLine = document.createElement('span');
+          symbolLine.className = 'fav-symbol';
+          symbolLine.textContent = fav.symbol;
+          const nameLine = document.createElement('span');
+          nameLine.className = 'fav-name';
+          nameLine.textContent = fav.name || fav.symbol;
+          link.appendChild(symbolLine);
+          link.appendChild(nameLine);
           link.addEventListener('click', (e) => {
             e.preventDefault();
             selectSymbol(fav.symbol);
+            setTab('chart');
           });
 
           const actions = document.createElement('span');
-          actions.style.display = 'flex';
-          actions.style.flexShrink = '0';
-          actions.style.marginLeft = '4px';
+          actions.className = 'fav-actions';
 
           const upBtn = document.createElement('button');
           upBtn.type = 'button';
           upBtn.textContent = '↑';
           upBtn.title = 'Nach oben';
           upBtn.disabled = index === 0;
-          upBtn.style.marginLeft = '2px';
+          upBtn.className = 'fav-edit-only';
           upBtn.addEventListener('click', () => moveFavorite(index, -1));
 
           const downBtn = document.createElement('button');
@@ -2097,7 +2553,7 @@
           downBtn.textContent = '↓';
           downBtn.title = 'Nach unten';
           downBtn.disabled = index === favs.length - 1;
-          downBtn.style.marginLeft = '2px';
+          downBtn.className = 'fav-edit-only';
           downBtn.addEventListener('click', () => moveFavorite(index, 1));
 
           // Fehlt das Flag (Altbestand), gilt Benachrichtigung als AN.
@@ -2106,14 +2562,14 @@
           notifyBtn.type = 'button';
           notifyBtn.textContent = notifyOn ? '🔔' : '🔕';
           notifyBtn.title = notifyOn ? 'Benachrichtigungen an (klicken zum Ausschalten)' : 'Benachrichtigungen aus (klicken zum Einschalten)';
-          notifyBtn.style.marginLeft = '2px';
+          notifyBtn.className = 'notify-btn' + (notifyOn ? '' : ' off');
           notifyBtn.addEventListener('click', () => toggleFavoriteNotify(fav.symbol));
 
           const removeBtn = document.createElement('button');
           removeBtn.type = 'button';
           removeBtn.textContent = '×';
           removeBtn.title = 'Entfernen';
-          removeBtn.style.marginLeft = '2px';
+          removeBtn.className = 'fav-edit-only';
           removeBtn.addEventListener('click', () => {
             saveFavorites(loadFavorites().filter(f => f.symbol !== fav.symbol));
             renderFavorites();
@@ -2338,9 +2794,11 @@
         allLabel.appendChild(document.createTextNode(' Alle Favoriten'));
         container.appendChild(allLabel);
 
-        favs.forEach(fav => {
+        // Gilt der Filter für alle Favoriten, wären die Einzel-Häkchen nur eine lange,
+        // ausgegraute Liste — erst beim Abwählen von „Alle Favoriten" erscheinen sie.
+        (chosen ? favs : []).forEach(fav => {
           const label = document.createElement('label');
-          label.style.marginLeft = '14px';
+          label.className = 'indent';
           const box = document.createElement('input');
           box.type = 'checkbox';
           box.checked = chosen ? chosen.includes(fav.symbol) : true;
@@ -2404,6 +2862,7 @@
         }
         if (name !== selectedPresetName()) activatePreset(name);
         setPresetMenuOpen(false);
+        setTab('filter');
         pendingWatchName = name;
         updateWatchUi();
         document.getElementById('watch-ranges').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -2649,7 +3108,7 @@
         if (RANGE_LABELS[entry.range]) {
           currentRange = entry.range;
           rangeButtons.forEach(b => {
-            b.style.fontWeight = b.dataset.range === entry.range ? 'bold' : 'normal';
+            b.classList.toggle('is-active', b.dataset.range === entry.range);
           });
         }
         selectSymbol(entry.symbol);
@@ -2680,20 +3139,18 @@
         if (!notifications.length) {
           const empty = document.createElement('li');
           empty.textContent = 'Noch keine Benachrichtigungen.';
-          empty.style.cssText = 'padding: 10px 8px; font-size: 12px; color: #999;';
+          empty.className = 'note-empty';
           list.appendChild(empty);
         }
 
         notifications.forEach(entry => {
           const li = document.createElement('li');
-          li.style.cssText = 'padding: 6px 8px; border-bottom: 1px solid #eee; cursor: pointer; font-size: 12px;';
-          if (!entry.read) li.style.background = '#f5f8ff';
-          li.addEventListener('mouseenter', () => li.style.background = '#eee');
-          li.addEventListener('mouseleave', () => li.style.background = entry.read ? '' : '#f5f8ff');
+          li.className = 'note-item' + (entry.read ? '' : ' unread');
           li.addEventListener('click', () => {
             markNotificationsRead();
             showNotificationContext(entry);
             document.getElementById('notifications-panel').style.display = 'none';
+            setTab('chart');
           });
 
           const signalLabel = SIGNAL_LABELS[entry.type] || 'Signal';
@@ -2702,13 +3159,12 @@
           headline.textContent = entry.sustainedLabel
             ? `⏳ Anhaltendes ${signalLabel} (seit ${entry.sustainedLabel}): ${entry.name || entry.symbol}`
             : `${signalLabel}: ${entry.name || entry.symbol}`;
-          headline.style.color = (HIGHLIGHT_STYLES[entry.type] || {}).color || '';
-          headline.style.fontWeight = '700';
+          headline.className = 'note-title' + (entry.type === 'green' ? ' buy' : entry.type === 'red' ? ' sell' : '');
 
           const meta = document.createElement('div');
           meta.textContent = `Filter „${entry.filter}“ · ${RANGE_LABELS[entry.range] || entry.range}`
             + `-Chart · ${formatNotificationTime(entry.ts)}`;
-          meta.style.cssText = 'color: #666; font-size: 11px;';
+          meta.className = 'note-meta';
 
           li.appendChild(headline);
           li.appendChild(meta);
@@ -2716,7 +3172,7 @@
         });
 
         const footer = document.createElement('li');
-        footer.style.cssText = 'padding: 6px 8px; font-size: 11px; color: #999;';
+        footer.className = 'note-footer';
         footer.textContent = `Der Server prüft alle ${Math.round(serverInfo.intervalSeconds / 60)}`
           + ' Minuten, auch bei geschlossenem Browser. Nach einer Meldung bleibt derselbe'
           + ` Wert ${Math.round(serverInfo.cooldownSeconds / 3600)} Stunden lang still. ` + mailFooterText();
@@ -2765,18 +3221,18 @@
         const button = document.getElementById('notifications-mail-test');
         const result = document.getElementById('notifications-mail-result');
         result.style.display = 'block';
-        result.style.color = '#666';
+        result.style.color = 'var(--ink-2)';
         result.textContent = 'Testmail wird verschickt ...';
         button.disabled = true;
         try {
           const res = await fetch('/api/alerts/mail-test', { method: 'POST' });
           const data = await res.json();
-          result.style.color = data.ok ? '#16a34a' : '#dc2626';
+          result.style.color = data.ok ? 'var(--buy-ink)' : 'var(--sell-ink)';
           result.textContent = data.ok
             ? 'Testmail verschickt — im Posteingang und im Spam-Ordner nachsehen.'
             : `Fehlgeschlagen: ${data.error || 'unbekannter Fehler'}`;
         } catch (err) {
-          result.style.color = '#dc2626';
+          result.style.color = 'var(--sell-ink)';
           result.textContent = `Server nicht erreichbar: ${err}`;
         }
         button.disabled = false;
@@ -2805,7 +3261,7 @@
       function syncUiFromState() {
         document.getElementById('selected-instrument').textContent = currentSymbol;
         rangeButtons.forEach(b => {
-          b.style.fontWeight = b.dataset.range === currentRange ? 'bold' : 'normal';
+          b.classList.toggle('is-active', b.dataset.range === currentRange);
         });
         updateFavoriteStar();
       }
