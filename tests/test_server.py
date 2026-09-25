@@ -228,7 +228,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg["archived"], [])
 
     def test_sanitize_keeps_only_known_designs(self):
-        self.assertEqual(server.sanitize_config({"design": "kueche"})["design"], "kueche")
+        self.assertEqual(server.sanitize_config({"design": "kursblatt"})["design"], "kursblatt")
         self.assertEqual(server.sanitize_config({"design": "<script>"})["design"], "klassisch")
         self.assertEqual(server.sanitize_config({})["design"], "klassisch")
 

@@ -54,7 +54,7 @@ CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
 }
 DEFAULT_PRESET_NAME = "Standard"  # muss zu index.html passen (die implizite Standard-Variante)
-DESIGNS = ("klassisch", "kursblatt", "kueche")  # muss zu DESIGNS in index.html passen
+DESIGNS = ("klassisch", "kursblatt")  # muss zu DESIGNS in index.html passen
 DEFAULT_DESIGN = "klassisch"
 ALERT_INTERVAL_SECONDS = 300
 MAX_NOTIFICATIONS = 200
