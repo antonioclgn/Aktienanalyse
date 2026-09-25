@@ -1,5 +1,11 @@
 __pycache__/
+*.pyc
+
+# Lokale Claude-Code-Einstellungen (Pfade und Rechte dieses Rechners).
+.claude/
 
 # Laufzeitdaten der Ueberwachung und die Mail-Zugangsdaten bleiben lokal.
 data/*.json
+data/*.tmp
+data/*.corrupt-*
 !data/mail_config.example.json

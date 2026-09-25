@@ -1,9 +1,8 @@
 # Aktienanalyse
 
-Zeigt für den S&P500 aktuelle Kennzahlen an:
-- Fear & Greed Index (CNN)
-- RSI 14
-- Preis vs. 200-Tage-Durchschnitt (in %)
+Charts für Aktien und ETFs mit Kauf-/Verkaufsbalken aus kombinierbaren Indikatoren
+(Fear & Greed, Smart/Dumb Money aus den COT-Daten, RSI 14, Abweichung vom gleitenden
+Durchschnitt, MACD) — und eine Überwachung, die bei Treffern in der Glocke und per Mail meldet.
 
 ## Server starten
 
@@ -30,8 +29,10 @@ Im Terminal, in dem der Server läuft, `Strg + C` drücken.
 
 ## Benachrichtigungen bei Filter-Treffern
 
-In den Balken-Einstellungen lässt sich jede gespeicherte Variante mit ☆ als Filter
-**überwachen** — zusammen mit einem Zeitraum (z.B. 10 Jahre). Der Server prüft dann
+In den Balken-Einstellungen lässt sich jede gespeicherte Variante als Filter
+**überwachen**: unter „Überwachen in diesen Zeitfenstern“ die gewünschten Zeiträume
+anhaken (z.B. 10 Jahre). Überwacht wird genau, was dort angehakt ist — ☆ wählt den Filter
+nur aus und markiert die Häkchen, ★ beendet die Überwachung. Der Server prüft dann
 alle 5 Minuten jeden überwachten Filter gegen jeden Favoriten-Wert und meldet, sobald
 der Filter im gewählten Chart anschlägt. Das läuft in `server.py`, also **auch bei
 geschlossenem Browser** — der Server muss dafür laufen.
@@ -43,19 +44,21 @@ paar Minuten erneut. Ein Richtungswechsel (Kauf ↔ Verkauf) durchbricht die Spe
 und die Meldungen zu länger anhaltenden Signalen bleiben davon unberührt.
 
 Hält ein Filter an, kommt bei 1, 2, 3, 7, 14 und 24 Einheiten je **eine** weitere Meldung
-(Einheit: Stunde im Tages-, Wochen- und Monats-Chart, Tag im Jahres-Chart, Woche bei 5 und
-10 Jahren); danach ist Schluss. Gemessen wird dabei die Uhrzeit ab dem ersten Ausschlag,
+(Einheit: Stunde im Tages-, Wochen- und Monats-Chart, Handelstag bei Jahr, 5 und 10
+Jahren); danach ist Schluss. Gemessen wird dabei die Uhrzeit ab dem ersten Ausschlag,
 nicht in Kerzen: Ein Wert, der um 12:03 anschlägt, meldet am nächsten Handelstag gegen
 12:03 — und nicht zur Börseneröffnung, wo sonst alle Werte gleichzeitig melden würden.
 
 Die Uhr läuft **nur während der Handelszeit**: nachts (23:00–07:30), an Wochenenden und an
 Feiertagen steht sie still, und in dieser Zeit wird auch nichts verschickt. Ein Ausschlag
-Freitag um 12:03 meldet also Montag gegen 12:03. Die Feiertage muss niemand pflegen — der
-Server erkennt sie daran, dass es für den jeweiligen Wert an dem Tag keine Kerze gibt, und
-richtet sich damit automatisch nach der Börse des Wertes.
+Freitag um 12:03 meldet also Montag gegen 12:03. Maßgeblich ist der **deutsche**
+Handelskalender, weil hier gehandelt wird. Die Feiertage muss niemand pflegen — der Server
+erkennt sie daran, dass der DAX an dem Tag keine Kerze hat. Vor Xetra-Eröffnung gilt ein
+Werktag als Handelstag, auch wenn seine DAX-Kerze noch fehlt.
 
-Die Meldungen erscheinen als Windows-Benachrichtigung, optional per E-Mail und immer in
-der Glocke oben auf der Seite.
+Die Meldungen erscheinen optional per E-Mail und immer in der Glocke oben auf der Seite.
+Es läuft immer nur eine Prüfung gleichzeitig; „sofort prüfen“ während einer laufenden
+Prüfung wird danach nachgeholt.
 
 Standardmäßig kommt die erste Meldung sofort beim Ausschlag. Wer das für einen Filter zu
 häufig findet, kann in den Balken-Einstellungen unter „Überwachen in diesen Zeitfenstern“
@@ -87,9 +90,28 @@ Fehlertext). Zum Prüfen:
 - auf dem Server `python3 server.py --mail-test` ausführen (meldet den Fehler im Klartext),
 - Versandprotokoll: `data/mail_log.json`, beim Dienst zusätzlich `journalctl -u aktienanalyse`.
 
+## Tests
+
+```
+python -m unittest discover tests
+```
+
+Die Tests brauchen weder Netz noch zusätzliche Pakete. Auf dem Pi laufen sie vor jedem
+Neustart automatisch (`update.sh`); schlagen sie fehl, bleibt der alte Stand aktiv.
+
+## Betrieb auf dem Pi
+
+`aktienanalyse.service`, `aktienanalyse-update.service` und `aktienanalyse-update.timer`
+nach `/etc/systemd/system/` **kopieren** (nicht verlinken — `<pi-user>` wird dort angepasst,
+und `update.sh` setzt das Repo bei jedem Update hart auf GitHub zurück), dann
+`sudo systemctl daemon-reload && sudo systemctl enable --now aktienanalyse aktienanalyse-update.timer`.
+`update.sh` holt jede Minute `origin/main` und startet den Dienst nur neu, wenn sich
+Python-Code geändert hat.
+
 ## Dateien
 
 - `index.html` — Oberfläche
-- `server.py` — lokaler Server, holt die Daten, berechnet RSI14 / Durchschnitte und überwacht die Filter
+- `server.py` — Server: holt die Daten, berechnet die Indikatoren und überwacht die Filter
+- `tests/` — Tests für `server.py`
 - `data/` — Laufzeitdaten der Überwachung (Watchlist, Benachrichtigungen, Zustand, Mail-Protokoll) und die Mail-Zugangsdaten
-- `feargreed_history_2011_2020.csv` — mitgelieferte Fear-&-Greed-Historie 2011–13.07.2020. CNNs eigene API liefert selbst nichts vor dem 14.07.2020 (getestet, HTTP 500 bei früherem Startdatum); für die Zeit davor wird diese Datei genutzt (Quelle: [whit3rabbit/fear-greed-data](https://github.com/whit3rabbit/fear-greed-data), Stand beim Download geprüft gegen CNNs Live-Werte). Ab 14.07.2020 kommen alle Werte live von CNN.
+- `feargreed_history_2011_2021.csv` — mitgelieferte Fear-&-Greed-Historie 2011–21.01.2021 (Quelle: [whit3rabbit/fear-greed-data](https://github.com/whit3rabbit/fear-greed-data)). CNNs eigene API liefert davor nur Platzhalterwerte; ab 22.01.2021 kommen alle Werte live von CNN.

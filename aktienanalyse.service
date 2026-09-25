@@ -12,6 +12,9 @@ Environment=AKTIENANALYSE_HOST=0.0.0.0
 # Ohne das puffert Python seine Ausgabe und Meldungen (z.B. Mailfehler) tauchen im
 # journal erst viel spaeter auf.
 Environment=PYTHONUNBUFFERED=1
+# Meldefenster (07:30-23:00), Handelstage und Uhrzeiten in den Mails rechnen in Ortszeit.
+# Fest auf Berlin, damit das nicht von der Zeitzonen-Einstellung des Pi abhaengt.
+Environment=TZ=Europe/Berlin
 ExecStart=/usr/bin/python3 /home/<pi-user>/Aktienanalyse/server.py
 Restart=always
 RestartSec=5

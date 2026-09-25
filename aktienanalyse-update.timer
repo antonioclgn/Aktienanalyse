@@ -2,9 +2,10 @@
 Description=Aktienanalyse: regelmaessig nach Code-Updates suchen
 
 [Timer]
-OnBootSec=2min          # erster Check 2 Min nach dem Booten
-OnUnitActiveSec=1min    # danach jede Minute
-Persistent=true
+# systemd kennt keine Kommentare hinter einem Wert — deshalb stehen sie hier darueber.
+# Erster Check 2 Minuten nach dem Booten, danach jede Minute.
+OnBootSec=2min
+OnUnitActiveSec=1min
 
 [Install]
 WantedBy=timers.target
