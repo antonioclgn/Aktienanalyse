@@ -227,6 +227,11 @@ class ConfigTests(unittest.TestCase):
                                            "symbols": ["MCD"]}])
         self.assertEqual(cfg["archived"], [])
 
+    def test_sanitize_keeps_only_known_designs(self):
+        self.assertEqual(server.sanitize_config({"design": "kueche"})["design"], "kueche")
+        self.assertEqual(server.sanitize_config({"design": "<script>"})["design"], "klassisch")
+        self.assertEqual(server.sanitize_config({})["design"], "klassisch")
+
     def test_sanitize_rejects_non_list_favorites(self):
         self.assertEqual(server.sanitize_config({"favorites": {"a": 1}})["favorites"], [])
 

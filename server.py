@@ -54,6 +54,8 @@ CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
 }
 DEFAULT_PRESET_NAME = "Standard"  # muss zu index.html passen (die implizite Standard-Variante)
+DESIGNS = ("klassisch", "kursblatt", "kueche")  # muss zu DESIGNS in index.html passen
+DEFAULT_DESIGN = "klassisch"
 ALERT_INTERVAL_SECONDS = 300
 MAX_NOTIFICATIONS = 200
 MAX_MAIL_LOG = 20
@@ -1984,6 +1986,8 @@ def sanitize_config(payload):
         "indicatorOrder": _clean_str_list(payload.get("indicatorOrder")),
         "archived": _clean_str_list(payload.get("archived")),
         "activeSettings": as_dict(payload.get("activeSettings")),
+        # Aussehen der Seite, auf allen Geräten gleich (siehe DESIGNS in index.html).
+        "design": payload.get("design") if payload.get("design") in DESIGNS else DEFAULT_DESIGN,
     }
 
 
