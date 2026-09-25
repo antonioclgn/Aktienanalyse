@@ -1,18 +1,20 @@
-"""Lokaler Server: liefert index.html aus und stellt unter /api/data
-Fear & Greed Index, RSI14 und den 200-Tage-Durchschnitt des S&P500 bereit.
+"""Aktienanalyse-Server: liefert index.html aus, stellt Kurse, Indikatoren und
+Stimmungsdaten (Fear & Greed, COT) unter /api/* bereit und überwacht im Hintergrund
+die markierten Filter (Meldungen in der Glocke und per Mail).
 """
 import bisect
 import calendar
 import csv
 import json
+import math
 import os
 import email.utils
 import smtplib
-import socket
-import subprocess
 import sys
+import tempfile
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from email.message import EmailMessage
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -113,6 +115,10 @@ MAX_QUOTE_AGE_SECONDS = 20 * 60
 # Raster: er hat an jedem hiesigen Handelstag eine Kerze und an keinem Feiertag.
 GERMAN_CALENDAR_SYMBOL = "^GDAXI"
 GERMAN_CALENDAR_TTL_SECONDS = 6 * 3600
+# Fehlt die heutige Kerze noch (vor Xetra-Eröffnung), wird der Kalender so oft neu geholt.
+GERMAN_CALENDAR_RETRY_SECONDS = 15 * 60
+# Bis zu dieser Uhrzeit gilt ein Werktag ohne DAX-Kerze als Handelstag (Xetra öffnet 09:00).
+GERMAN_OPEN_GRACE_SECONDS = 10 * 3600
 PHASE_LABELS = {"pre": "Vorbörse", "post": "Nachbörse"}
 EXCHANGE_LABELS = {
     "NYQ": "New York", "NMS": "Nasdaq", "NGM": "Nasdaq", "PNK": "OTC", "BTS": "BATS",
@@ -170,16 +176,31 @@ CHART_LOOKBACK_DAYS = {
     "10y": 320,  # ~200 Handelstage inkl. Wochenenden/Feiertage
 }
 
-_cache = {}
+# Schlüssel -> (Zeitpunkt, Gültigkeit, Wert), älteste zuerst. Obergrenze, weil jede
+# Kombination aus Wert, Zeitraum und MA-Fenster einen eigenen Eintrag bekommt und der
+# Server auf dem Pi wochenlang läuft.
+_cache = OrderedDict()
+_cache_lock = threading.Lock()
+CACHE_MAX_ENTRIES = 400
 
 
 def cached(key, ttl, fetch_fn):
     now = time.monotonic()
-    entry = _cache.get(key)
-    if entry and now - entry[0] < ttl:
-        return entry[1]
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and now - entry[0] < ttl:
+            _cache.move_to_end(key)
+            return entry[2]
+    # Abruf bewusst außerhalb des Locks: sonst wartet jede Anfrage auf Yahoo.
     value = fetch_fn()
-    _cache[key] = (now, value)
+    with _cache_lock:
+        _cache[key] = (now, ttl, value)
+        _cache.move_to_end(key)
+        if len(_cache) > CACHE_MAX_ENTRIES:
+            for stale in [k for k, (t, life, _) in _cache.items() if now - t >= life]:
+                del _cache[stale]
+            while len(_cache) > CACHE_MAX_ENTRIES:
+                _cache.popitem(last=False)
     return value
 
 
@@ -201,34 +222,35 @@ def fetch_json(url, extra_headers=None):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def js_round(value):
+    """Runden wie Math.round im Browser (0,5 immer aufwärts). Pythons round() rundet
+    0,5 zur geraden Zahl — dann rechneten Chart und Überwachung mit verschiedenen
+    Fenstern (z.B. 2,5 Wochen: Browser 3, Server 2)."""
+    return math.floor(float(value) + 0.5)
+
+
+def fetch_chart(url):
+    """Yahoo-Chart abrufen: ([(Zeit, Schluss)], Meta), leere Kerzen schon entfernt.
+
+    Bei einem unbekannten Symbol liefert Yahoo {"chart": {"result": null, "error": …}} —
+    daraus wird eine lesbare Fehlermeldung statt eines 'NoneType'-Fehlers."""
+    chart = fetch_json(url).get("chart") or {}
+    results = chart.get("result")
+    if not results:
+        error = chart.get("error") or {}
+        raise ValueError(error.get("description") or "Yahoo lieferte keine Kursdaten")
+    result = results[0]
+    quotes = (result.get("indicators") or {}).get("quote") or [{}]
+    closes = quotes[0].get("close") or []
+    points = [(t, c) for t, c in zip(result.get("timestamp") or [], closes) if c is not None]
+    return points, result.get("meta") or {}
+
+
 def percentile_rank(values, value):
     """Anteil der Werte in `values`, die <= `value` sind, in Prozent."""
     if not values:
         return 0.0
     return 100.0 * sum(1 for v in values if v <= value) / len(values)
-
-
-def compute_rsi14(closes):
-    if len(closes) < 15:
-        return None
-
-    gains, losses = [], []
-    for i in range(1, len(closes)):
-        change = closes[i] - closes[i - 1]
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
-
-    avg_gain = sum(gains[:14]) / 14
-    avg_loss = sum(losses[:14]) / 14
-
-    for i in range(14, len(gains)):
-        avg_gain = (avg_gain * 13 + gains[i]) / 14
-        avg_loss = (avg_loss * 13 + losses[i]) / 14
-
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
 
 
 def compute_rsi_series(closes, period=14):
@@ -256,31 +278,21 @@ def compute_rsi_series(closes, period=14):
 
 
 def get_market_data(symbol):
-    url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""), range="1y", interval="1d")
-    data = fetch_json(url)
-    result = data["chart"]["result"][0]
-    meta = result["meta"]
-    points = [
-        (t, c) for t, c in zip(result.get("timestamp", []), result["indicators"]["quote"][0]["close"])
-        if c is not None
-    ]
+    """Name und aktueller Kurs eines Papiers (Kopfzeile der Seite)."""
+    url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""), range="5d", interval="1d")
+    points, meta = fetch_chart(url)
     points, currency = convert_points(points, meta.get("currency"))
-    closes = [p[1] for p in points]
 
     # Der frischeste Kurs von einer Börse, die gerade handelt — regularMarketPrice
     # steht außerhalb der Handelszeit auf dem Schlusskurs des Vortages.
     live = cached(("quote", symbol), CACHE_TTL_SECONDS, lambda: get_live_quote(symbol))
-    current_price = live["price"] if live else (closes[-1] if closes else None)
-    sma200 = sum(closes[-200:]) / 200 if len(closes) >= 200 else None
-    rsi14 = compute_rsi14(closes)
+    current_price = live["price"] if live else (points[-1][1] if points else None)
 
     return {
         "symbol": meta.get("symbol", symbol),
         "name": meta.get("longName") or meta.get("shortName") or meta.get("symbol", symbol),
         "currency": currency,
         "price": current_price,
-        "sma200": sma200,
-        "rsi14": rsi14,
         "quote": live,
     }
 
@@ -296,7 +308,7 @@ EMA_LONG_PERIOD = 200
 
 # Bei diesen (untertägigen) Intervallen reicht die eigene Historie nie für einen
 # 200-Tage-Durchschnitt. Stattdessen wird er separat aus Tageskursen berechnet und
-# pro Kalendertag auf die untertägigen Punkte übertragen (siehe get_daily_moving_average_by_date).
+# pro Kalendertag auf die untertägigen Punkte übertragen (siehe get_daily_average_by_date).
 INTRADAY_INTERVALS = {"5m", "30m", "1h"}
 # ~200 Handelstage inkl. Wochenenden/Feiertage, plus Puffer, damit auch der Anfang
 # des längsten untertägigen Anzeigezeitraums (Monat, 30 Tage) noch abgedeckt ist.
@@ -350,40 +362,38 @@ def compute_macd_series(closes, fast=12, slow=26, signal=9):
     return macd_line, signal_line
 
 
-def get_daily_moving_average_by_date(symbol, window=MA_WINDOW_DEFAULT):
+AVERAGE_KINDS = {"sma": compute_moving_average, "ema": compute_ema_series}
+
+
+def get_daily_average_by_date(symbol, window, kind="sma"):
+    """{"JJJJ-MM-TT": Durchschnitt} aus Tageskursen — für untertägige Intervalle, deren
+    eigene Historie nie für einen 200-Tage-Durchschnitt reicht. `kind`: "sma" oder "ema"."""
     period2 = int(time.time())
     period1 = period2 - MA_DAILY_LOOKBACK_DAYS * 86400
     url = YAHOO_CHART_URL_PERIOD.format(
         symbol=quote(symbol, safe=""), period1=period1, period2=period2, interval="1d"
     )
-    data = fetch_json(url)
-    result = data["chart"]["result"][0]
-    timestamps = result.get("timestamp", [])
-    closes = result["indicators"]["quote"][0]["close"]
-
-    points = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
+    points, meta = fetch_chart(url)
     # Gleiche Währung wie die untertägige Reihe, auf die diese Linie gelegt wird —
     # sonst läge der Durchschnitt um den Wechselkurs neben dem Kurs.
-    points, _ = convert_points(points, result.get("meta", {}).get("currency"))
-    daily_timestamps = [p[0] for p in points]
-    daily_closes = [p[1] for p in points]
-    ma_series = compute_moving_average(daily_closes, window)
-
+    points, _ = convert_points(points, meta.get("currency"))
+    series = AVERAGE_KINDS[kind]([p[1] for p in points], window)
     return {
-        time.strftime("%Y-%m-%d", time.gmtime(t)): ma
-        for t, ma in zip(daily_timestamps, ma_series)
-        if ma is not None
+        time.strftime("%Y-%m-%d", time.gmtime(t)): value
+        for (t, _), value in zip(points, series)
+        if value is not None
     }
 
 
-def moving_average_for_window(days, interval, symbol, all_closes, all_timestamps):
-    """Gleitender Durchschnitt über `days` Handelstage, passend zum Kerzenintervall."""
+def average_for_window(days, interval, symbol, all_closes, all_timestamps, kind="sma"):
+    """Gleitender Durchschnitt (SMA oder EMA) über `days` Handelstage, passend zum
+    Kerzenintervall."""
     if interval in INTRADAY_INTERVALS:
         # Untertägig reicht die eigene Historie nie: aus Tageskursen berechnen und
         # pro Kalendertag auf die untertägigen Punkte übertragen.
         by_date = cached(
-            ("daily_ma", symbol, days), CACHE_TTL_SECONDS,
-            lambda: get_daily_moving_average_by_date(symbol, days),
+            ("daily_" + kind, symbol, days), CACHE_TTL_SECONDS,
+            lambda: get_daily_average_by_date(symbol, days, kind),
         )
         sorted_dates = sorted(by_date)
         series = []
@@ -395,53 +405,7 @@ def moving_average_for_window(days, interval, symbol, all_closes, all_timestamps
             series.append(by_date[sorted_dates[idx]] if idx >= 0 else None)
         return series
 
-    return compute_moving_average(all_closes, days)
-
-
-def get_daily_ema_by_date(symbol, period):
-    """Wie get_daily_moving_average_by_date, aber EMA statt SMA. Für untertägige
-    Intervalle, deren eigene Historie nie für einen 200-Perioden-EMA reicht."""
-    period2 = int(time.time())
-    period1 = period2 - MA_DAILY_LOOKBACK_DAYS * 86400
-    url = YAHOO_CHART_URL_PERIOD.format(
-        symbol=quote(symbol, safe=""), period1=period1, period2=period2, interval="1d"
-    )
-    data = fetch_json(url)
-    result = data["chart"]["result"][0]
-    timestamps = result.get("timestamp", [])
-    closes = result["indicators"]["quote"][0]["close"]
-
-    points = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
-    points, _ = convert_points(points, result.get("meta", {}).get("currency"))
-    daily_timestamps = [p[0] for p in points]
-    daily_closes = [p[1] for p in points]
-    ema_series = compute_ema_series(daily_closes, period)
-
-    return {
-        time.strftime("%Y-%m-%d", time.gmtime(t)): ema
-        for t, ema in zip(daily_timestamps, ema_series)
-        if ema is not None
-    }
-
-
-def ema_for_window(days, interval, symbol, all_closes, all_timestamps):
-    """Exponentieller gleitender Durchschnitt über `days` Handelstage, passend zum
-    Kerzenintervall — spiegelt moving_average_for_window."""
-    if interval in INTRADAY_INTERVALS:
-        # Untertägig aus Tageskursen berechnen und pro Kalendertag übertragen.
-        by_date = cached(
-            ("daily_ema", symbol, days), CACHE_TTL_SECONDS,
-            lambda: get_daily_ema_by_date(symbol, days),
-        )
-        sorted_dates = sorted(by_date)
-        series = []
-        for t in all_timestamps:
-            date_key = time.strftime("%Y-%m-%d", time.gmtime(t))
-            idx = bisect.bisect_right(sorted_dates, date_key) - 1
-            series.append(by_date[sorted_dates[idx]] if idx >= 0 else None)
-        return series
-
-    return compute_ema_series(all_closes, days)
+    return AVERAGE_KINDS[kind](all_closes, days)
 
 
 def fetch_fx_series(currency):
@@ -452,11 +416,7 @@ def fetch_fx_series(currency):
         symbol=quote(FX_PAIR_TEMPLATE.format(currency=currency), safe=""),
         period1=period1, period2=period2, interval="1d",
     )
-    result = fetch_json(url)["chart"]["result"][0]
-    points = [
-        (t, c) for t, c in zip(result.get("timestamp", []), result["indicators"]["quote"][0]["close"])
-        if c is not None
-    ]
+    points, _ = fetch_chart(url)
     return [p[0] for p in points], [p[1] for p in points]
 
 
@@ -507,12 +467,9 @@ def fetch_daily(symbol, range_key="1y"):
     """({"JJJJ-MM-TT": (Zeit, Schluss)}, Meta) — Basis für den Vergleich zweier
     Listings desselben Papiers."""
     url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""), range=range_key, interval="1d")
-    result = fetch_json(url)["chart"]["result"][0]
-    by_date = {}
-    for t, close in zip(result.get("timestamp", []), result["indicators"]["quote"][0]["close"]):
-        if close is not None:
-            by_date[time.strftime("%Y-%m-%d", time.localtime(t))] = (t, close)
-    return by_date, result.get("meta", {})
+    points, meta = fetch_chart(url)
+    by_date = {time.strftime("%Y-%m-%d", time.localtime(t)): (t, close) for t, close in points}
+    return by_date, meta
 
 
 def venue_deviation(primary, primary_currency, candidate, candidate_currency):
@@ -603,13 +560,9 @@ def fetch_last_print(symbol, include_pre_post=False):
     url = YAHOO_CHART_URL.format(symbol=quote(symbol, safe=""), range="1d", interval="5m")
     if include_pre_post:
         url += "&includePrePost=true"
-    result = fetch_json(url)["chart"]["result"][0]
-    meta = result.get("meta", {})
+    points, meta = fetch_chart(url)
 
-    best_ts, best_price = 0, None
-    for t, close in zip(result.get("timestamp", []), result["indicators"]["quote"][0]["close"]):
-        if close is not None and t > best_ts:
-            best_ts, best_price = t, close
+    best_ts, best_price = max(points) if points else (0, None)
     # regularMarketPrice steht außerhalb der Handelszeit auf dem Vortagesschluss und
     # zählt deshalb nur, wenn es wirklich jünger ist als die letzte Kerze. Auf dünnen
     # deutschen Plätzen ist es umgekehrt die bessere Quelle: dort fehlen die Kerzen.
@@ -699,13 +652,7 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
     if interval in INTRADAY_INTERVALS:
         url += "&includePrePost=true"
 
-    data = fetch_json(url)
-    result = data["chart"]["result"][0]
-    meta = result.get("meta", {})
-    timestamps = result.get("timestamp", [])
-    closes = result["indicators"]["quote"][0]["close"]
-
-    points = [(t, c) for t, c in zip(timestamps, closes) if c is not None]
+    points, meta = fetch_chart(url)
     points, currency = convert_points(points, meta.get("currency"))
 
     # Der frischeste Kurs von einer Börse, die gerade handelt. Bei Tageskerzen fehlt
@@ -727,7 +674,10 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
     else:
         quote_info = cached(("quote", symbol), CACHE_TTL_SECONDS, lambda: get_live_quote(symbol))
         appended = False
-        if quote_info and points:
+        # Nur in derselben Währung anhängen: scheitert der Wechselkurs für den Live-Kurs,
+        # aber nicht für die Historie (oder umgekehrt), läge der letzte Punkt um den
+        # Wechselkurs daneben — und RSI/MACD/Abweichung schlügen falsch aus.
+        if quote_info and points and quote_info.get("currency") == currency:
             last_day = time.strftime("%Y-%m-%d", time.localtime(points[-1][0]))
             quote_day = time.strftime("%Y-%m-%d", time.localtime(quote_info["ts"]))
             if quote_day > last_day:
@@ -741,13 +691,11 @@ def get_history(symbol, range_key, ma_window=MA_DEVIATION_WINDOW_DEFAULT):
 
     # Ein einziger gleitender Durchschnitt über das einstellbare Fenster: er wird im
     # Kurschart gezeichnet und ist zugleich der Bezug für die Abweichung darunter.
-    moving_average = moving_average_for_window(
-        ma_window, interval, symbol, all_closes, all_timestamps
-    )
+    moving_average = average_for_window(ma_window, interval, symbol, all_closes, all_timestamps)
 
     # Zwei feste EMA-Linien für den oberen Kurschart (unabhängig vom MAD-Fenster).
-    ema_short = ema_for_window(EMA_SHORT_PERIOD, interval, symbol, all_closes, all_timestamps)
-    ema_long = ema_for_window(EMA_LONG_PERIOD, interval, symbol, all_closes, all_timestamps)
+    ema_short = average_for_window(EMA_SHORT_PERIOD, interval, symbol, all_closes, all_timestamps, "ema")
+    ema_long = average_for_window(EMA_LONG_PERIOD, interval, symbol, all_closes, all_timestamps, "ema")
 
     rsi_series = compute_rsi_series(all_closes, 14)
     macd_line, macd_signal_line = compute_macd_series(all_closes)
@@ -930,9 +878,9 @@ def get_fear_greed():
 # ---------------------------------------------------------------------------
 # Überwachung der Favoriten-Filter
 #
-# Die Seite meldet ihre Favoriten und die als Favorit markierten Filter (samt
-# Zeitraum und Schwellenwerten) an /api/alerts/watchlist. Von da an prüft dieser
-# Server die Kombinationen selbst weiter — auch wenn kein Browser offen ist.
+# Die Seite speichert Favoriten, Filter und die überwachten Zeitfenster über /api/config;
+# daraus entsteht watchlist.json. Von da an prüft dieser Server die Kombinationen selbst
+# weiter — auch wenn kein Browser offen ist.
 # Die Signal-Logik ist dieselbe wie im Chart: ein Signal gibt es nur, wenn ALLE
 # im Filter aktivierten Indikatoren am aktuellen Rand in dieselbe Richtung zeigen.
 # ---------------------------------------------------------------------------
@@ -965,7 +913,7 @@ DEFAULT_DURATION_UNIT = (OPEN_SECONDS_PER_DAY, "Tag", "Tagen")
 
 
 def milestone_label(units, range_key):
-    """z.B. (7, '1y') -> '7 Tagen', (1, '10y') -> '1 Woche'."""
+    """z.B. (7, '1y') -> '7 Tagen', (1, '10y') -> '1 Tag', (3, '5d') -> '3 Stunden'."""
     _, singular, plural = DURATION_UNITS.get(range_key, DEFAULT_DURATION_UNIT)
     return f"1 {singular}" if units == 1 else f"{units} {plural}"
 
@@ -1015,7 +963,7 @@ def sd_change_series(sd_times, sd_spreads, timestamps, weeks):
     (5-Minuten-Kerzen) immer 0. Also je Kerze den zugehörigen Wochenbericht suchen und von
     dort `weeks` Berichte zurückgehen. Am Anfang der Historie fehlt der Vergleichswert
     -> None (wie der Warmup der anderen Indikatoren)."""
-    weeks = max(1, int(weeks))
+    weeks = max(1, js_round(weeks))
     values = []
     for t in timestamps:
         index = bisect.bisect_right(sd_times, t) - 1
@@ -1099,18 +1047,65 @@ INDICATOR_ENABLED_KEY = {ind["key"]: ind["enabled_key"] for ind in INDICATORS}
 _file_lock = threading.Lock()
 
 
-def read_json_file(path, fallback):
+class CorruptFileError(ValueError):
+    """Die Datei existiert, enthält aber kein gültiges JSON (siehe read_json_file)."""
+
+
+def read_json_file(path, fallback, strict=False, move_aside=True):
+    """JSON lesen; fehlt die Datei, gilt `fallback`.
+
+    Kaputtes JSON wird nicht still verschluckt: die Datei wird als *.corrupt beiseite
+    gelegt und geloggt (außer mit move_aside=False, z.B. für die von Hand gepflegte
+    Mail-Config). Mit `strict` bekommt der Aufrufer das als CorruptFileError mit —
+    für den Überwachungszustand wichtig, denn ein leerer Zustand hieße „alles ist neu"
+    und damit eine Mail für jedes laufende Signal."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return fallback
+    except OSError as exc:
+        print(f"{path.name} nicht lesbar: {exc}", flush=True)
+        return fallback
+    try:
+        return json.loads(text)
+    except ValueError as exc:
+        if not move_aside:
+            return fallback
+        backup = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+        try:
+            path.replace(backup)
+        except OSError:
+            pass
+        print(f"{path.name} war kein gültiges JSON ({exc}), beiseitegelegt als {backup.name}", flush=True)
+        if strict:
+            raise CorruptFileError(str(exc)) from exc
         return fallback
 
 
 def write_json_file(path, value):
-    DATA_DIR.mkdir(exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    """Atomar schreiben: erst in eine eigene Temp-Datei, dann umbenennen. Der Name ist
+    je Aufruf eindeutig, damit sich zwei Threads nicht gegenseitig die Datei zerlegen."""
+    path.parent.mkdir(exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=1)
+        for attempt in range(5):
+            try:
+                os.replace(tmp_name, path)
+                break
+            except PermissionError:
+                # Nur unter Windows: dort scheitert das Ersetzen, solange ein anderer
+                # Thread dieselbe Datei gerade ersetzt oder liest. Kurz warten genügt.
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def forward_filled(times, values, timestamp):
@@ -1127,6 +1122,10 @@ def german_trading_days():
     Wert selbst taugt dafür nicht — solange die NYSE morgens noch geschlossen ist,
     fehlt dort die heutige Kerze und der ganze Tag sähe wie ein Feiertag aus.
 
+    Die heutige DAX-Kerze gibt es erst ab Xetra-Eröffnung. Solange sie fehlt, wird der
+    Kalender öfter neu geholt (GERMAN_CALENDAR_RETRY_SECONDS) statt sechs Stunden lang
+    zu glauben, heute sei Feiertag; bis dahin entscheidet is_trading_day über heute.
+
     None heißt "Kalender unbekannt"; dann entscheidet allein Mo-Fr (siehe is_trading_day)."""
     def fetch():
         by_date, _ = fetch_daily(GERMAN_CALENDAR_SYMBOL, "1y")
@@ -1136,18 +1135,44 @@ def german_trading_days():
             days.add((int(year), int(month), int(day)))
         return days or None
 
+    today = _day_key(time.localtime())
+    with _cache_lock:
+        entry = _cache.get("german_trading_days")
+    ttl = GERMAN_CALENDAR_TTL_SECONDS
+    if entry and entry[2] and today not in entry[2] and time.localtime().tm_wday < 5:
+        ttl = GERMAN_CALENDAR_RETRY_SECONDS
     try:
-        return cached("german_trading_days", GERMAN_CALENDAR_TTL_SECONDS, fetch)
+        return cached("german_trading_days", ttl, fetch)
     except Exception as exc:
         print(f"Deutscher Handelskalender nicht abrufbar: {exc}")
         return None
 
 
-def is_trading_day(local, trading_days):
-    """`local` ist ein time.struct_time. Ohne bekanntes Raster gilt schlicht Mo-Fr."""
+def _day_key(local):
+    return (local.tm_year, local.tm_mon, local.tm_mday)
+
+
+def is_trading_day(local, trading_days, now=None):
+    """`local` ist ein time.struct_time. Ohne bekanntes Raster gilt schlicht Mo-Fr.
+
+    Der heutige Tag steht erst nach Xetra-Eröffnung im DAX-Raster. Bis
+    GERMAN_OPEN_GRACE_SECONDS gilt ein Werktag deshalb als Handelstag, auch wenn seine
+    Kerze noch fehlt — sonst ginge zwischen 07:30 und 09:00 keine Meldung raus. Fehlt
+    die Kerze danach immer noch, ist heute wirklich Feiertag."""
+    if local.tm_wday >= 5:
+        return False
     if trading_days is None:
-        return local.tm_wday < 5
-    return (local.tm_year, local.tm_mon, local.tm_mday) in trading_days
+        return True
+    key = _day_key(local)
+    if key in trading_days:
+        return True
+    current = time.localtime(time.time() if now is None else now)
+    if key == _day_key(current):
+        daytime = current.tm_hour * 3600 + current.tm_min * 60 + current.tm_sec
+        return daytime < GERMAN_OPEN_GRACE_SECONDS
+    # Ein Tag nach dem letzten bekannten (noch nicht geholten) Tag ist nicht als
+    # Feiertag belegt — z.B. ein Kalender, der gestern früh geholt wurde.
+    return key > max(trading_days)
 
 
 def in_trading_window(timestamp, trading_days=None):
@@ -1285,12 +1310,6 @@ def combined_signal_series(data, settings, fg_times, fg_scores, sd_times, sd_spr
     return result
 
 
-def evaluate_signal(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
-    """'green', 'red' oder None für den letzten Datenpunkt einer Kurshistorie."""
-    series = combined_signal_series(data, settings, fg_times, fg_scores, sd_times, sd_spreads)
-    return series[-1] if series else None
-
-
 def evaluate_signal_and_run(data, settings, fg_times, fg_scores, sd_times, sd_spreads):
     """Liefert (signal, kennung, beginn) für den letzten Balken einer Kurshistorie.
 
@@ -1322,33 +1341,6 @@ def evaluate_signal_and_run(data, settings, fg_times, fg_scores, sd_times, sd_sp
     # Nur die offene Kerze -> kein belastbarer Beginn (siehe oben).
     begun = timestamps[started] if started < len(timestamps) - 1 else 0
     return signal, anchor, begun
-
-
-def send_windows_toast(title, body):
-    """Windows-Benachrichtigung über die Bordmittel von PowerShell (ohne Zusatzmodul)."""
-    if os.name != "nt":
-        return
-    script = (
-        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications,"
-        " ContentType = WindowsRuntime] | Out-Null;"
-        "$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
-        "[Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
-        "$x = $t.GetElementsByTagName('text');"
-        "$x.Item(0).AppendChild($t.CreateTextNode($env:ALERT_TITLE)) | Out-Null;"
-        "$x.Item(1).AppendChild($t.CreateTextNode($env:ALERT_BODY)) | Out-Null;"
-        "$toast = [Windows.UI.Notifications.ToastNotification]::new($t);"
-        "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("
-        "'{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'"
-        ").Show($toast)"
-    )
-    env = dict(os.environ, ALERT_TITLE=title, ALERT_BODY=body)
-    try:
-        subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            env=env, capture_output=True, timeout=20, check=True,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        print(f"Windows-Benachrichtigung fehlgeschlagen: {exc}")
 
 
 def load_mail_config():
@@ -1417,7 +1409,11 @@ def send_mails(items):
     # "ssl" (üblich auf Port 465), "starttls" (üblich auf 587) oder "none".
     security = config.get("security") or ("ssl" if port == 465 else "starttls")
 
+    pending = list(items)   # was noch nicht verschickt ist — nur das wird wiederholt
+    error = message_error = None
+
     def attempt():
+        nonlocal message_error
         server = (smtplib.SMTP_SSL if security == "ssl" else smtplib.SMTP)(
             config["host"], port, timeout=30
         )
@@ -1426,28 +1422,42 @@ def send_mails(items):
                 server.starttls()
             if config.get("user"):
                 server.login(config["user"], config.get("password", ""))
-            for subject, body in items:
-                server.send_message(build_message(config, subject, body))
+            while pending:
+                subject, body = pending[0]
+                try:
+                    server.send_message(build_message(config, subject, body))
+                    log_mail_attempt(subject, True, None)
+                except (smtplib.SMTPRecipientsRefused, smtplib.SMTPDataError,
+                        smtplib.SMTPSenderRefused) as exc:
+                    # Betrifft nur diese eine Nachricht — die übrigen trotzdem versuchen.
+                    message_error = f"{type(exc).__name__}: {exc}"
+                    log_mail_attempt(subject, False, message_error)
+                pending.pop(0)
 
-    error = None
     for tries_left in (1, 0):
         try:
             attempt()
-            for subject, _ in items:
-                log_mail_attempt(subject, True, None)
-            return True, None
+            error = None
+            break
+        except smtplib.SMTPServerDisconnected as exc:
+            # Verbindung mittendrin weg — wie ein Netzfehler behandeln.
+            error = f"{type(exc).__name__}: {exc}"
+            if tries_left:
+                time.sleep(5)
         except smtplib.SMTPException as exc:
             # Anmelde-/Protokollfehler wiederholen sich beim zweiten Versuch genauso.
             error = f"{type(exc).__name__}: {exc}"
             break
         except OSError as exc:
-            # Netz/TLS — auf dem Pi durchaus mal vorübergehend. Einmal nachfassen.
+            # Netz/TLS — auf dem Pi durchaus mal vorübergehend. Einmal nachfassen,
+            # aber nur mit dem, was noch nicht raus ist (sonst kämen Mails doppelt).
             error = f"{type(exc).__name__}: {exc}"
             if tries_left:
                 time.sleep(5)
-    for subject, _ in items:
+    for subject, _ in pending:
         log_mail_attempt(subject, False, error)
-    return False, error
+    error = error or message_error
+    return error is None, error
 
 
 def send_mail(subject, body):
@@ -1497,23 +1507,12 @@ def notification_text(entry):
     return title, body
 
 
-def _local_ip():
-    """LAN-IP dieses Rechners (ohne echten Verbindungsaufbau) — für Links in der Mail."""
-    try:
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            probe.connect(("8.8.8.8", 80))
-            return probe.getsockname()[0]
-        finally:
-            probe.close()
-    except OSError:
-        return "127.0.0.1"
-
-
 def notification_base_url():
     """Basis-URL für die Links in den Mails. In data/mail_config.json per "baseUrl"
     überschreibbar; standardmäßig die feste Adresse des Raspberry Pi."""
-    config = read_json_file(MAIL_CONFIG_FILE, None) or {}
+    config = read_json_file(MAIL_CONFIG_FILE, None, move_aside=False) or {}
+    if not isinstance(config, dict):
+        config = {}
     base = (config.get("baseUrl") or "").strip().rstrip("/")
     return base or f"http://192.168.178.134:{PORT}"
 
@@ -1614,64 +1613,275 @@ def derive_watchlist(config):
     return {"favorites": favorites, "filters": filters, "updated": int(time.time())}
 
 
-def run_alert_check(force=False):
-    """Ein Durchlauf: jeder überwachte Filter gegen jeden Favoriten.
+def same_local_day(a, b):
+    return bool(a and b) and _day_key(time.localtime(a)) == _day_key(time.localtime(b))
+
+
+def decide_alert(prev, signal, run_anchor, run_begun, from_fallback, now, trading,
+                 min_delay_days, range_key):
+    """Die gesamte Melde-Entscheidung für EINEN Filter+Zeitfenster+Wert, ohne Netz und
+    ohne Dateien. Liefert (neuer Zustand, Meldungen); eine Meldung ist die Zahl der
+    erreichten Dauer-Einheiten ("seit 2 Tagen") oder None für die Sofortmeldung.
+
+    `prev` ist der gespeicherte Zustand (siehe normalize_state_entry), `signal`,
+    `run_anchor` und `run_begun` kommen aus evaluate_signal_and_run. `from_fallback`
+    heißt: das Signal hängt an einem Kurs aus einem deutschen Zweitlisting."""
+    prev = normalize_state_entry(prev)
+    notes = []
+
+    # Kurse aus einem deutschen Zweitlisting tragen erst nach Bestätigung: diese
+    # Orderbücher sind dünn, ein einzelner Ausreißer-Print würde sonst eine Mail
+    # auslösen. Der Ausschlag muss im nächsten Durchlauf (rund fünf Minuten später)
+    # noch stehen — und zwar am selben Tag: eine Vormerkung von gestern Abend
+    # bestätigt nicht den ersten Print von heute früh. Ab 10:00 liefert die
+    # Vor-/Nachbörse der Heimatbörse ohnehin den frischeren Kurs und bestätigt sofort.
+    confirmed = prev["pendingSignal"] == signal and same_local_day(prev["pendingSince"], now)
+    if signal is not None and from_fallback and not confirmed:
+        return {**prev, "pendingSignal": signal, "pendingSince": now}, notes
+
+    def fire_due_milestones(already, since, first_alert=False):
+        """Meilensteine melden, die die Serie erreicht hat. Gezählt wird die HANDELSZEIT
+        seit `since` (ohne Nächte, Wochenenden und Feiertage) — so kommt die
+        Tages-Meldung zur Uhrzeit des Ausschlags und nicht zur Börseneröffnung. Sind
+        mehrere Schwellen auf einmal fällig — typisch, wenn der Server eine schon
+        laufende Serie zum ersten Mal sieht —, kommt NUR die höchste: sie enthält die
+        Aussage der kleineren. `first_alert` ist die Sofortmeldung eines neuen
+        Ausschlags; sie entfällt, wenn ohnehin eine Dauer-Meldung rausgeht.
+
+        Ist eine Mindestdauer eingestellt (`min_delay_days`), bleibt es bis dahin ganz
+        still — auch die Sofortmeldung entfällt. Läuft die Serie beim ersten Blick schon
+        länger, meldet die erste Mail gleich mit dem passenden „seit X Tagen"-Text."""
+        if min_delay_days and open_seconds(since, now, trading) < min_delay_days * OPEN_SECONDS_PER_DAY:
+            return already
+        due = [m for m in DURATION_MILESTONES
+               if m not in already and milestone_reached(since, now, m, range_key, trading)]
+        if due:
+            notes.append(max(due))
+        elif first_alert:
+            notes.append(None)
+        return list(already) + due
+
+    def keep_notified(state_signal, milestones, anchor=None, since=None, pending=None):
+        """Zustand fortschreiben, ohne Sperr-, Meilenstein- und Dauer-Gedächtnis zu
+        verlieren. Ohne `anchor`/`since` bleiben die gemerkten Werte stehen — beim
+        Wegkippen des Signals gibt es keine neuen, und genau sie werden später zum
+        Wiedererkennen derselben Serie und für ihre Dauer gebraucht.
+
+        `pending` setzt die Bestätigungs-Vormerkung neu; None behält sie. Beim Wegkippen
+        wird sie gelöscht, damit ein späterer Ausschlag wieder von vorn bestätigt werden
+        muss."""
+        return {
+            "signal": state_signal,
+            "notifiedMilestones": milestones,
+            "notifiedSignal": prev["notifiedSignal"],
+            "notifiedAt": prev["notifiedAt"],
+            "runAnchor": prev["runAnchor"] if anchor is None else anchor,
+            "runSince": prev["runSince"] if since is None else since,
+            "pendingSignal": prev["pendingSignal"] if pending is None else pending,
+            "pendingSince": prev["pendingSince"] if pending is None else now,
+        }
+
+    cooling = now - prev["notifiedAt"] < NOTIFY_COOLDOWN_SECONDS
+    # Serien-Vergleich: gleiche Kennung = nachweislich dieselbe Serie. Eine ANDERE heißt,
+    # die Serie hat neu begonnen — auch dann, wenn der Server die Pause zwischen zwei
+    # Prüfungen gar nicht zu sehen bekam (bei kurzen Kerzen oder nach einem Neustart
+    # durchaus möglich). Alte Zustände ohne runAnchor (0) lassen keinen Vergleich zu;
+    # dort entscheiden wie bisher letzter Zustand und Sperre.
+    same_run = bool(run_anchor) and prev["runAnchor"] == run_anchor
+    restarted = bool(run_anchor) and bool(prev["runAnchor"]) and not same_run
+    # Fortsetzung statt neuem Ausschlag: entweder unverändert am Ausschlagen, oder
+    # dieselbe Richtung ist nach kurzem Wegkippen zurück — nachweislich dieselbe
+    # Kerzen-Serie oder noch innerhalb der Sperre (Zappeln um die Schwelle).
+    continues = (prev["signal"] == signal and not restarted) or (
+        prev["notifiedSignal"] == signal and (cooling or same_run)
+    )
+
+    if not signal:
+        # Kein Ausschlag mehr. Die Sperre muss trotzdem stehen bleiben, sonst wäre jedes
+        # kurze Wegkippen des Signals wieder ein "neuer" Ausschlag.
+        return keep_notified("none", prev["notifiedMilestones"], pending="none"), notes
+
+    if continues:
+        # Ab wann die Dauer zählt: die gemerkte Uhr weiterlaufen lassen; Altbestand ohne
+        # runSince fällt auf den Zeitpunkt der ersten Meldung zurück, ganz alte Stände
+        # auf jetzt — so wird beim Deployen nichts rückwirkend fällig.
+        since = align_to_trading_window(prev["runSince"] or prev["notifiedAt"] or now, trading)
+        # Nur neu erreichte Dauer-Schwellen melden — das Gedächtnis bleibt erhalten,
+        # also kommt nichts doppelt.
+        milestones = fire_due_milestones(prev["notifiedMilestones"], since)
+        return keep_notified(signal, milestones, run_anchor, since), notes
+
+    # Neuer bzw. erstmals gesehener Ausschlag (auch Richtungswechsel Kauf<->Verkauf, der
+    # die Sperre bewusst durchbricht): sofort melden. Beginn aus der Historie, sonst die
+    # Minute der Entdeckung (Normalfall, sorgt für den Bezug zur Uhrzeit 12:03). Läuft
+    # die Serie laut Historie schon länger, sagt die EINE Meldung das gleich mit
+    # ("Anhaltendes Kaufsignal (seit 2 Tagen)"), statt mehrere Mails zu schicken.
+    since = align_to_trading_window(run_begun or now, trading)
+    state = {
+        "signal": signal,
+        "notifiedMilestones": fire_due_milestones([], since, first_alert=True),
+        "notifiedSignal": signal,
+        "notifiedAt": now,
+        "runAnchor": run_anchor,
+        "runSince": since,
+        "pendingSignal": prev["pendingSignal"],
+        "pendingSince": prev["pendingSince"],
+    }
+    return state, notes
+
+
+def make_note(now, favorite, symbol, filter_name, range_key, signal, sustained_units=None):
+    note = {
+        "ts": now * 1000,
+        "symbol": symbol,
+        "name": favorite.get("name") or symbol,
+        "filter": filter_name,
+        "range": range_key,
+        "type": signal,
+        "read": False,
+    }
+    if sustained_units is not None:
+        note["sustainedUnits"] = sustained_units
+        note["sustainedLabel"] = milestone_label(sustained_units, range_key)
+    return note
+
+
+def filter_needs(settings):
+    """Welche marktweiten Reihen ein Filter braucht: "fg" (Fear & Greed), "sd" (COT)."""
+    needs = set()
+    if settings.get("useFearGreed"):
+        needs.add("fg")
+    if settings.get("useSmartDumb") or settings.get("useSdChange"):
+        needs.add("sd")
+    return needs
+
+
+def load_sentiment():
+    """Fear & Greed und COT holen — jede Quelle für sich. Fällt eine aus, fehlt nur sie;
+    Filter ohne diese Reihe werden trotzdem geprüft (siehe filter_needs)."""
+    result = {}
+    for key, cache_key, ttl, fetch in (
+        ("fg", "fear_greed", CACHE_TTL_SECONDS, get_fear_greed),
+        ("sd", "smart_dumb", COT_CACHE_TTL_SECONDS, get_smart_dumb_money),
+    ):
+        try:
+            result[key] = cached(cache_key, ttl, fetch)
+        except Exception as exc:
+            print(f"{cache_key} nicht abrufbar: {exc}", flush=True)
+            result[key] = None
+    return result
+
+
+def dispatch_mails(items):
+    """Mails im Hintergrund verschicken: ein langsamer SMTP-Server (samt Wiederholung)
+    soll weder die HTTP-Anfrage noch den nächsten Prüflauf aufhalten."""
+    if items:
+        threading.Thread(target=send_mails, args=(items,), daemon=True).start()
+
+
+# Nur EIN Prüflauf zur Zeit. Sonst lesen zwei Läufe (Hintergrundschleife und „sofort
+# prüfen") denselben alten Zustand, melden beide dasselbe Signal — doppelte Mails — und
+# der langsamere überschreibt die Zustandsänderungen des schnelleren.
+_alert_lock = threading.Lock()
+# Wurde während eines Laufs erneut „sofort prüfen" angefordert, läuft danach noch einer:
+# die Watchlist kann sich in der Zwischenzeit geändert haben.
+_alert_recheck = threading.Event()
+
+
+def run_alert_check(force=False, wait=True):
+    """Ein Durchlauf: jeder überwachte Filter gegen jeden Favoriten. Liefert die neuen
+    Meldungen — oder None, wenn ohne `wait` schon ein Lauf aktiv war; der prüft dann
+    im Anschluss noch einmal mit dem neuesten Stand.
 
     Außerhalb der Handelszeit wird nicht geprüft und deshalb auch nichts gemeldet — ein
     Signal, das nachts oder am Wochenende entsteht, kommt beim ersten Durchlauf im
-    Meldefenster. `force=True` übergeht das (Knopf „sofort prüfen" auf der Seite: wer
-    ausdrücklich prüft, will auch nachts eine Antwort)."""
+    Meldefenster. `force=True` übergeht NUR dieses Zeitfenster (Knopf „sofort prüfen":
+    wer ausdrücklich prüft, will auch nachts eine Antwort); die Bestätigung von
+    Zweitlisting-Kursen gilt trotzdem."""
+    if not _alert_lock.acquire(blocking=wait):
+        if force:
+            _alert_recheck.set()
+        return None
+    try:
+        fresh = _run_alert_check_locked(force)
+        while _alert_recheck.is_set():
+            _alert_recheck.clear()
+            fresh += _run_alert_check_locked(True)
+        return fresh
+    finally:
+        _alert_lock.release()
+
+
+def _run_alert_check_locked(force):
     watchlist = read_json_file(WATCHLIST_FILE, {}) or {}
-    favorites = watchlist.get("favorites") or []
-    filters = watchlist.get("filters") or []
+    all_favorites = [f for f in watchlist.get("favorites") or [] if isinstance(f, dict)]
+    filters = [f for f in watchlist.get("filters") or [] if isinstance(f, dict)]
     # Nur Favoriten mit eingeschalteter Benachrichtigung prüfen. Fehlt das Flag
     # (Altbestand), gilt es als AN — so verliert niemand bestehende Meldungen.
-    favorites = [f for f in favorites if f.get("notify", True)]
+    favorites = [f for f in all_favorites if f.get("notify", True)]
     if not favorites or not filters:
         return []
     # Nachtruhe, Wochenende und deutsche Feiertage gelten für alle Werte gleich — dann
     # gar nicht erst bei Yahoo anfragen. Maßgeblich ist der DEUTSCHE Handelskalender,
-    # nicht der der jeweiligen Heimatbörse: gehandelt wird hier. Das per-Wert-Raster
-    # hielte einen US-Wert den ganzen Vormittag für geschlossen, weil die NYSE dann
-    # noch keine heutige Kerze hat — und genau das hat Meldungen um Stunden verzögert.
+    # nicht der der jeweiligen Heimatbörse: gehandelt wird hier.
     trading = german_trading_days()
     if not force and not in_trading_window(int(time.time()), trading):
         return []
 
-    fear_greed = cached("fear_greed", CACHE_TTL_SECONDS, get_fear_greed)
-    smart_dumb = cached("smart_dumb", COT_CACHE_TTL_SECONDS, get_smart_dumb_money)
-    fg_history = fear_greed.get("history") or []
-    sd_history = (smart_dumb or {}).get("history") or []
+    sentiment = load_sentiment()
+    available = {key for key, value in sentiment.items() if value}
+    fg_history = (sentiment["fg"] or {}).get("history") or []
+    sd_history = (sentiment["sd"] or {}).get("history") or []
     fg_times = [p["t"] for p in fg_history]
     fg_scores = [p["score"] for p in fg_history]
     sd_times = [p["t"] for p in sd_history]
     sd_spreads = [p["spread"] for p in sd_history]
 
-    previous = read_json_file(ALERT_STATE_FILE, {}) or {}
+    # Ein kaputter Zustand hieße „alles ist neu" und damit eine Mail je laufendem Signal.
+    # Stattdessen still neu aufbauen: Zustand wie gemeldet speichern, aber nichts melden.
+    try:
+        previous = read_json_file(ALERT_STATE_FILE, {}, strict=True) or {}
+        silent = not isinstance(previous, dict)
+    except CorruptFileError:
+        previous, silent = {}, True
+    if silent:
+        previous = {}
     current = dict(previous)
+    watched_keys = set()
     fresh = []
 
     for entry in filters:
         name = entry.get("name")
         if not name:
             continue
-        settings = {**DEFAULT_FILTER_SETTINGS, **(entry.get("settings") or {})}
-        # Mindestdauer, bevor überhaupt eine erste Meldung kommt (0 = sofort, wie bisher).
-        # Immer in echten Handelstagen gemessen, unabhängig vom überwachten Zeitfenster.
-        min_delay_days = entry.get("minDelayDays") or 0
-        # Ein Filter kann auf einzelne Werte eingeschränkt sein. Fehlt das Feld (Altbestand)
-        # oder ist es keine Liste, gilt der Filter wie bisher für ALLE Favoriten.
-        raw_symbols = entry.get("symbols")
-        allowed_symbols = set(raw_symbols) if isinstance(raw_symbols, list) else None
-        # Ein Filter kann mehrere Zeitfenster überwachen (z.B. 5 und 10 Jahre);
-        # ältere Stände hatten nur ein einzelnes "range".
+        # Ein Filter kann mehrere Zeitfenster überwachen (z.B. 5 und 10 Jahre); ältere
+        # Stände hatten nur ein einzelnes "range". Überwacht wird GENAU, was angehakt ist.
         raw_ranges = entry.get("ranges")
         if not isinstance(raw_ranges, list):
             raw_ranges = [entry.get("range")]
         range_keys = [r for r in raw_ranges if r in CHART_RANGES]
-        if not range_keys:
-            range_keys = [DEFAULT_CHART_RANGE]
-        ma_window = max(MA_WINDOW_MIN, min(MA_WINDOW_MAX, int(settings["maDeviationWindow"])))
+        # Ein Filter kann auf einzelne Werte eingeschränkt sein. Fehlt das Feld (Altbestand)
+        # oder ist es keine Liste, gilt der Filter wie bisher für ALLE Favoriten.
+        raw_symbols = entry.get("symbols")
+        allowed_symbols = set(raw_symbols) if isinstance(raw_symbols, list) else None
+        # Zustand aller Favoriten behalten, auch stummgeschalteter: sonst käme ein noch
+        # laufendes Signal nach dem Wiedereinschalten als „neu".
+        for range_key in range_keys:
+            for favorite in all_favorites:
+                symbol = (favorite.get("symbol") or "").strip()
+                if symbol:
+                    watched_keys.add(f"{name}|{range_key}|{symbol}")
+
+        try:
+            settings = {**DEFAULT_FILTER_SETTINGS, **(entry.get("settings") or {})}
+            ma_window = max(MA_WINDOW_MIN, min(MA_WINDOW_MAX, js_round(settings["maDeviationWindow"])))
+            # Mindestdauer, bevor überhaupt eine erste Meldung kommt (0 = sofort).
+            min_delay_days = int(entry.get("minDelayDays") or 0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            print(f"Filter {name} hat ungültige Einstellungen, übersprungen: {exc}", flush=True)
+            continue
+        if filter_needs(settings) - available:
+            continue    # Stimmungsdaten fehlen: alten Zustand behalten, nächster Lauf versucht es neu
 
         for range_key in range_keys:
             for favorite in favorites:
@@ -1694,156 +1904,32 @@ def run_alert_check(force=False):
                 except Exception as exc:
                     # Alten Zustand behalten: sonst käme die Meldung beim nächsten
                     # erfolgreichen Durchlauf ein zweites Mal.
-                    print(f"Prüfung {key} fehlgeschlagen: {exc}")
+                    print(f"Prüfung {key} fehlgeschlagen: {exc}", flush=True)
                     continue
 
-                now = int(time.time())
-                prev = normalize_state_entry(previous.get(key))
-
-                # Kurse aus einem deutschen Zweitlisting tragen erst nach Bestätigung:
-                # diese Orderbücher sind dünn, ein einzelner Ausreißer-Print würde sonst
-                # eine Mail auslösen. Der Ausschlag muss im nächsten Durchlauf (rund fünf
-                # Minuten später) noch stehen. Ab 10:00 liefert die Vor-/Nachbörse der
-                # Heimatbörse ohnehin den frischeren Kurs und bestätigt sofort, deshalb
-                # betrifft die Wartezeit praktisch nur den frühen Vormittag.
                 live = data.get("quote") or {}
-                unconfirmed = (
-                    signal is not None
-                    and live.get("appended")
-                    and live.get("source") == "fallback"
-                    and prev["pendingSignal"] != signal
+                from_fallback = bool(live.get("appended")) and live.get("source") == "fallback"
+                now = int(time.time())
+                current[key], due = decide_alert(
+                    previous.get(key), signal, run_anchor, run_begun, from_fallback,
+                    now, trading, min_delay_days, range_key,
                 )
-                if unconfirmed and not force:
-                    current[key] = {
-                        **prev,
-                        "pendingSignal": signal,
-                        "pendingSince": now,
-                    }
-                    continue
+                for units in due:
+                    fresh.append(make_note(now, favorite, symbol, name, range_key, signal, units))
 
-                def make_note(sustained_units=None):
-                    note = {
-                        "ts": now * 1000,
-                        "symbol": symbol,
-                        "name": favorite.get("name") or symbol,
-                        "filter": name,
-                        "range": range_key,
-                        "type": signal,
-                        "read": False,
-                    }
-                    if sustained_units is not None:
-                        note["sustainedUnits"] = sustained_units
-                        note["sustainedLabel"] = milestone_label(sustained_units, range_key)
-                    return note
-
-                def fire_due_milestones(already, since, first_alert=False):
-                    """Meilensteine melden, die die Serie erreicht hat. Gezählt wird die
-                    HANDELSZEIT seit `since` (ohne Nächte, Wochenenden und Feiertage) — so
-                    kommt die Tages-Meldung zur Uhrzeit des Ausschlags und nicht zur
-                    Börseneröffnung. Sind mehrere Schwellen auf einmal fällig — typisch, wenn
-                    der Server eine schon laufende Serie zum ersten Mal sieht —, kommt NUR die
-                    höchste: sie enthält die Aussage der kleineren. Sonst kämen mehrere Mails
-                    gleichzeitig, die dasselbe sagen. `first_alert` ist die Sofortmeldung eines
-                    neuen Ausschlags; sie entfällt, wenn ohnehin eine Dauer-Meldung rausgeht.
-
-                    Ist eine Mindestdauer eingestellt (`min_delay_days`), bleibt es bis dahin
-                    ganz still — auch die Sofortmeldung entfällt. Läuft die Serie beim ersten
-                    Blick schon länger als die Mindestdauer, meldet die erste Mail gleich mit
-                    dem passenden „seit X Tagen"-Text (über die normale Meilenstein-Logik unten)."""
-                    if min_delay_days and open_seconds(since, now, trading) < min_delay_days * OPEN_SECONDS_PER_DAY:
-                        return already
-                    due = [m for m in DURATION_MILESTONES
-                           if m not in already
-                           and milestone_reached(since, now, m, range_key, trading)]
-                    if due:
-                        fresh.append(make_note(sustained_units=max(due)))
-                    elif first_alert:
-                        fresh.append(make_note())
-                    return list(already) + due
-
-                def keep_notified(state_signal, milestones, anchor=None, since=None,
-                                  pending=None):
-                    """Zustand fortschreiben, ohne Sperr-, Meilenstein- und Dauer-Gedächtnis zu
-                    verlieren. Ohne `anchor`/`since` bleiben die gemerkten Werte stehen — beim
-                    Wegkippen des Signals gibt es keine neuen, und genau sie werden später zum
-                    Wiedererkennen derselben Serie und für ihre Dauer gebraucht.
-
-                    `pending` setzt die Bestätigungs-Vormerkung neu; None behält sie. Beim
-                    Wegkippen wird sie gelöscht, damit ein späterer Ausschlag wieder von vorn
-                    bestätigt werden muss."""
-                    return {
-                        "signal": state_signal,
-                        "notifiedMilestones": milestones,
-                        "notifiedSignal": prev["notifiedSignal"],
-                        "notifiedAt": prev["notifiedAt"],
-                        "runAnchor": prev["runAnchor"] if anchor is None else anchor,
-                        "runSince": prev["runSince"] if since is None else since,
-                        "pendingSignal": prev["pendingSignal"] if pending is None else pending,
-                        "pendingSince": prev["pendingSince"] if pending is None else now,
-                    }
-
-                cooling = now - prev["notifiedAt"] < NOTIFY_COOLDOWN_SECONDS
-                # Serien-Vergleich: gleiche Kennung = nachweislich dieselbe Serie. Eine ANDERE
-                # heißt, die Serie hat neu begonnen — auch dann, wenn der Server die Pause
-                # zwischen zwei Prüfungen gar nicht zu sehen bekam (bei kurzen Kerzen oder nach
-                # einem Neustart durchaus möglich). Alte Zustände ohne runAnchor (0) lassen
-                # keinen Vergleich zu; dort entscheiden wie bisher letzter Zustand und Sperre.
-                same_run = bool(run_anchor) and prev["runAnchor"] == run_anchor
-                restarted = bool(run_anchor) and bool(prev["runAnchor"]) and not same_run
-                # Fortsetzung statt neuem Ausschlag: entweder unverändert am Ausschlagen, oder
-                # dieselbe Richtung ist nach kurzem Wegkippen zurück — nachweislich dieselbe
-                # Kerzen-Serie oder noch innerhalb der Sperre (Zappeln um die Schwelle).
-                continues = (prev["signal"] == signal and not restarted) or (
-                    prev["notifiedSignal"] == signal and (cooling or same_run)
-                )
-                # Ab wann die Dauer zählt. Fortsetzung: die gemerkte Uhr weiterlaufen lassen;
-                # Altbestand ohne runSince fällt auf den Zeitpunkt der ersten Meldung zurück,
-                # ganz alte Stände auf jetzt — so wird beim Deployen nichts rückwirkend fällig.
-                resumed_since = align_to_trading_window(
-                    prev["runSince"] or prev["notifiedAt"] or now, trading
-                )
-                # Neuer Ausschlag: Beginn aus der Historie, sonst die Minute der Entdeckung.
-                # Letzteres ist der Normalfall und sorgt für den Bezug zur Uhrzeit (12:03).
-                fresh_since = align_to_trading_window(run_begun or now, trading)
-
-                if not signal:
-                    # Kein Ausschlag mehr. Die Sperre muss trotzdem stehen bleiben, sonst
-                    # wäre jedes kurze Wegkippen des Signals wieder ein "neuer" Ausschlag.
-                    current[key] = keep_notified("none", prev["notifiedMilestones"],
-                                                 pending="none")
-                elif continues:
-                    # Nur neu erreichte Dauer-Schwellen melden — das Gedächtnis bleibt
-                    # erhalten, also kommt nichts doppelt.
-                    current[key] = keep_notified(
-                        signal,
-                        fire_due_milestones(prev["notifiedMilestones"], resumed_since),
-                        run_anchor,
-                        resumed_since,
-                    )
-                else:
-                    # Neuer bzw. erstmals gesehener Ausschlag (auch Richtungswechsel Kauf<->Verkauf,
-                    # der die Sperre bewusst durchbricht): sofort melden. Läuft die Serie laut
-                    # Historie schon länger, sagt die EINE Meldung das gleich mit ("Anhaltendes
-                    # Kaufsignal (seit 2 Tagen)"), statt mehrere Mails zu schicken.
-                    current[key] = {
-                        "signal": signal,
-                        "notifiedMilestones": fire_due_milestones(
-                            [], fresh_since, first_alert=True
-                        ),
-                        "notifiedSignal": signal,
-                        "notifiedAt": now,
-                        "runAnchor": run_anchor,
-                        "runSince": fresh_since,
-                    }
-
-    write_json_file(ALERT_STATE_FILE, current)
+    # Zustand nicht mehr überwachter Kombinationen (Filter gelöscht, Zeitfenster
+    # abgewählt, Favorit entfernt) wegräumen — sonst wächst die Datei endlos.
+    current = {k: v for k, v in current.items() if k in watched_keys}
+    with _file_lock:
+        write_json_file(ALERT_STATE_FILE, current)
+    if silent:
+        print(f"Überwachungszustand neu aufgebaut, {len(fresh)} Meldungen unterdrückt", flush=True)
+        return []
     if fresh:
         store_notifications(fresh)
-        for item in fresh:
-            send_windows_toast(*notification_text(item))
         # Je Treffer eine eigene Mail (eindeutiger Betreff, damit Gmail sie nicht zu
         # einem Verlauf zusammenklappt) — alle über eine SMTP-Verbindung.
-        send_mails([alert_mail(item) for item in fresh])
+        dispatch_mails([alert_mail(item) for item in fresh])
     return fresh
 
 
@@ -1852,8 +1938,73 @@ def alert_loop():
         try:
             run_alert_check()
         except Exception as exc:
-            print(f"Überwachung fehlgeschlagen: {exc}")
+            print(f"Überwachung fehlgeschlagen: {exc}", flush=True)
         time.sleep(ALERT_INTERVAL_SECONDS)
+
+
+def _clean_str_list(value):
+    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
+def sanitize_config(payload):
+    """Die vom Browser hochgeladene Config auf die erwarteten Typen bringen. Ein falscher
+    Typ (z.B. favorites als Objekt) würde sonst JEDEN späteren Prüflauf abbrechen lassen."""
+    def as_dict(value):
+        return value if isinstance(value, dict) else {}
+
+    favorites = [
+        f for f in payload.get("favorites") or []
+        if isinstance(f, dict) and isinstance(f.get("symbol"), str) and f["symbol"].strip()
+    ] if isinstance(payload.get("favorites"), list) else []
+    presets = {
+        name: settings for name, settings in as_dict(payload.get("presets")).items()
+        if isinstance(name, str) and isinstance(settings, dict)
+    }
+    watched = []
+    for entry in payload.get("watched") or [] if isinstance(payload.get("watched"), list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            continue
+        try:
+            delay = max(0, int(entry.get("minDelayDays") or 0))
+        except (TypeError, ValueError):
+            delay = 0
+        symbols = entry.get("symbols")
+        watched.append({
+            "name": entry["name"],
+            # Nur echte Zeitfenster — überwacht wird genau, was angehakt ist.
+            "ranges": [r for r in _clean_str_list(entry.get("ranges")) if r in CHART_RANGES],
+            "minDelayDays": delay,
+            "symbols": _clean_str_list(symbols) if isinstance(symbols, list) else None,
+        })
+    return {
+        "favorites": favorites,
+        "presets": presets,
+        "presetOrder": _clean_str_list(payload.get("presetOrder")),
+        "watched": watched,
+        "indicatorOrder": _clean_str_list(payload.get("indicatorOrder")),
+        "archived": _clean_str_list(payload.get("archived")),
+        "activeSettings": as_dict(payload.get("activeSettings")),
+    }
+
+
+def trading_days_for_client():
+    """Deutsche Handelstage als "JJJJ-MM-TT" für die Vorschau der Mindestdauer im Chart —
+    derselbe Kalender, nach dem der Server meldet. Heute steht drin, wenn der Server heute
+    als Handelstag zählt (auch vor Xetra-Eröffnung). None = unbekannt, dann gilt Mo-Fr."""
+    days = german_trading_days()
+    if days is None:
+        return None
+    keys = set(days)
+    today = time.localtime()
+    if is_trading_day(today, days):
+        keys.add(_day_key(today))
+    return sorted(f"{y:04d}-{m:02d}-{d:02d}" for y, m, d in keys)
+
+
+# Ausgeliefert wird nur, was die Seite wirklich braucht — nicht das ganze Repo (.git,
+# .claude, Quelltext). data/ mit den Mail-Zugangsdaten sowieso nie.
+STATIC_FILES = {"/": "index.html", "/index.html": "index.html", "/icon.png": "icon.png"}
+MAX_BODY_BYTES = 1024 * 1024
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1868,31 +2019,35 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_status(self, status):
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
 
         if parsed.path == "/api/data":
+            # Jede Quelle für sich: fällt z.B. die COT-Abfrage aus, sollen Kurs und
+            # Fear & Greed trotzdem ankommen. Was fehlt, steht in "errors".
             symbol = query.get("symbol", [DEFAULT_SYMBOL])[0].strip() or DEFAULT_SYMBOL
-            try:
-                with ThreadPoolExecutor(max_workers=3) as pool:
-                    market_future = pool.submit(
-                        cached, ("market", symbol), CACHE_TTL_SECONDS, lambda: get_market_data(symbol)
-                    )
-                    fear_greed_future = pool.submit(
-                        cached, "fear_greed", CACHE_TTL_SECONDS, get_fear_greed
-                    )
-                    smart_dumb_future = pool.submit(
-                        cached, "smart_dumb", COT_CACHE_TTL_SECONDS, get_smart_dumb_money
-                    )
-                    payload = {
-                        "market": market_future.result(),
-                        "fearGreed": fear_greed_future.result(),
-                        "smartDumbMoney": smart_dumb_future.result(),
-                    }
-                self._send_json(payload)
-            except Exception as exc:
-                self._send_json({"error": str(exc)}, status=502)
+            sources = {
+                "market": (("market", symbol), CACHE_TTL_SECONDS, lambda: get_market_data(symbol)),
+                "fearGreed": ("fear_greed", CACHE_TTL_SECONDS, get_fear_greed),
+                "smartDumbMoney": ("smart_dumb", COT_CACHE_TTL_SECONDS, get_smart_dumb_money),
+            }
+            payload, errors = {}, {}
+            with ThreadPoolExecutor(max_workers=len(sources)) as pool:
+                futures = {name: pool.submit(cached, *args) for name, args in sources.items()}
+                for name, future in futures.items():
+                    try:
+                        payload[name] = future.result()
+                    except Exception as exc:
+                        payload[name] = None
+                        errors[name] = str(exc)
+            payload["errors"] = errors
+            self._send_json(payload, status=502 if len(errors) == len(sources) else 200)
             return
 
         if parsed.path == "/api/history":
@@ -1901,8 +2056,9 @@ class Handler(BaseHTTPRequestHandler):
             if range_key not in CHART_RANGES:
                 range_key = DEFAULT_CHART_RANGE
             try:
-                ma_window = int(query.get("maWindow", [MA_DEVIATION_WINDOW_DEFAULT])[0])
-            except ValueError:
+                # Gleiche Rundung wie in der Überwachung und im Browser (Math.round).
+                ma_window = js_round(query.get("maWindow", [MA_DEVIATION_WINDOW_DEFAULT])[0])
+            except (ValueError, OverflowError):
                 ma_window = MA_DEVIATION_WINDOW_DEFAULT
             ma_window = max(MA_WINDOW_MIN, min(MA_WINDOW_MAX, ma_window))
             try:
@@ -1910,7 +2066,7 @@ class Handler(BaseHTTPRequestHandler):
                     ("history", symbol, range_key, ma_window), CACHE_TTL_SECONDS,
                     lambda: get_history(symbol, range_key, ma_window),
                 )
-                self._send_json(result)
+                self._send_json({**result, "tradingDays": trading_days_for_client()})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=502)
             return
@@ -1947,25 +2103,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=502)
             return
 
-        path = parsed.path
-        if path == "/":
-            path = "/index.html"
-        file_path = (BASE_DIR / path.lstrip("/")).resolve()
-
-        # data/ enthält u.a. die Mail-Zugangsdaten und wird nie ausgeliefert.
-        if BASE_DIR not in file_path.parents and file_path != BASE_DIR:
-            self.send_response(403)
-            self.end_headers()
+        name = STATIC_FILES.get(parsed.path)
+        file_path = BASE_DIR / name if name else None
+        if not file_path or not file_path.is_file():
+            self._send_status(404)
             return
-        if file_path == DATA_DIR or DATA_DIR in file_path.parents:
-            self.send_response(403)
-            self.end_headers()
-            return
-        if not file_path.is_file():
-            self.send_response(404)
-            self.end_headers()
-            return
-
         content_type = CONTENT_TYPES.get(file_path.suffix, "application/octet-stream")
         body = file_path.read_bytes()
         self.send_response(200)
@@ -1977,12 +2119,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _same_origin(self):
+        """Schreibende Anfragen nur von der eigenen Seite. Ohne diese Prüfung könnte jede
+        Webseite, die jemand im Heimnetz öffnet, per unsichtbarem Formular die Config
+        überschreiben oder Testmails auslösen. Browser schicken bei POST immer Origin
+        bzw. Sec-Fetch-Site mit; curl ohne beides bleibt erlaubt."""
+        if self.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+            return False
+        origin = self.headers.get("Origin")
+        if origin and origin != "null":
+            return urlparse(origin).netloc == self.headers.get("Host", "")
+        return origin != "null"
+
     def _read_json_body(self):
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip()
+        if content_type != "application/json":
+            return None
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError:
             return None
-        if length <= 0:
+        if length <= 0 or length > MAX_BODY_BYTES:
             return None
         try:
             return json.loads(self.rfile.read(length).decode("utf-8"))
@@ -1991,6 +2148,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if not self._same_origin():
+            self._send_json({"error": "fremde Herkunft"}, status=403)
+            return
 
         # Geräteübergreifende Config (Favoriten, Varianten samt ihrer Reihenfolge,
         # überwachte Filter, Indikator-Reihenfolge, archivierte Indikatoren, aktive
@@ -2025,13 +2185,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     return
                 config = {
-                    "favorites": payload.get("favorites") or [],
-                    "presets": payload.get("presets") or {},
-                    "presetOrder": payload.get("presetOrder") or [],
-                    "watched": payload.get("watched") or [],
-                    "indicatorOrder": payload.get("indicatorOrder") or [],
-                    "archived": payload.get("archived") or [],
-                    "activeSettings": payload.get("activeSettings") or {},
+                    **sanitize_config(payload),
                     # Muss streng steigen, sonst wären zwei Uploads in derselben Sekunde
                     # nicht unterscheidbar und einer davon käme unbemerkt durch.
                     "updated": max(stored_updated + 1, int(time.time())),
@@ -2041,23 +2195,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "updated": config["updated"]})
             return
 
-        # (Alt-Endpunkt, von der Seite nicht mehr genutzt: direkte Watchlist.)
-        if parsed.path == "/api/alerts/watchlist":
-            payload = self._read_json_body()
-            if not isinstance(payload, dict):
-                self._send_json({"error": "ungültige Daten"}, status=400)
-                return
-            write_json_file(WATCHLIST_FILE, {
-                "favorites": payload.get("favorites") or [],
-                "filters": payload.get("filters") or [],
-                "updated": int(time.time()),
-            })
-            self._send_json({"ok": True})
-            return
-
         if parsed.path == "/api/alerts/notifications/read":
             with _file_lock:
                 entries = read_json_file(NOTIFICATIONS_FILE, [])
+                if not isinstance(entries, list):
+                    entries = []
                 write_json_file(NOTIFICATIONS_FILE, [{**e, "read": True} for e in entries])
             self._send_json({"ok": True})
             return
@@ -2075,18 +2217,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": ok, "error": error})
             return
 
-        # Sofort prüfen (z.B. direkt nach dem Markieren eines Filters). Bewusst mit force:
-        # wer hier ausdrücklich prüft, will auch außerhalb der Handelszeit eine Antwort.
+        # Sofort prüfen (z.B. direkt nach dem Anhaken eines Zeitfensters). Bewusst mit
+        # force: wer hier ausdrücklich prüft, will auch außerhalb der Handelszeit eine
+        # Antwort. Läuft schon eine Prüfung, wird sie nach ihrem Ende wiederholt.
         if parsed.path == "/api/alerts/check":
             try:
-                fresh = run_alert_check(force=True)
-                self._send_json({"new": len(fresh)})
+                fresh = run_alert_check(force=True, wait=False)
+                if fresh is None:
+                    self._send_json({"queued": True})
+                else:
+                    self._send_json({"new": len(fresh)})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=502)
             return
 
-        self.send_response(404)
-        self.end_headers()
+        self._send_status(404)
 
 
 def mail_setup_line():
