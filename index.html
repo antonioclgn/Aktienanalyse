@@ -2857,6 +2857,11 @@
       function updateFavoriteStar() {
         const isFavorite = loadFavorites().some(f => f.symbol === currentSymbol);
         document.getElementById('favorite-star').textContent = isFavorite ? '★' : '☆';
+        // Hervorhebung in der Favoritenliste mitziehen — sonst bleibt der Wert markiert,
+        // der beim letzten Neuzeichnen der Liste angezeigt wurde.
+        document.querySelectorAll('#favorites-list .favorite-item').forEach(item => {
+          item.classList.toggle('is-current', item.dataset.symbol === currentSymbol);
+        });
       }
 
       function moveFavorite(index, direction) {
@@ -2878,6 +2883,7 @@
           const li = document.createElement('li');
           li.className = 'favorite-item' + (fav.symbol === currentSymbol ? ' is-current' : '');
           li.dataset.index = index;
+          li.dataset.symbol = fav.symbol;
 
           const handle = document.createElement('span');
           handle.className = 'drag-handle';
