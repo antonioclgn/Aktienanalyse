@@ -32,6 +32,8 @@
   /* Zeilen im Filter-Menue (preset-menu). */
   .preset-row:hover { background: #f2f2f2; }
   .preset-row.active { background: #eef4ff; }
+  /* Nach ☆ an einem noch nicht überwachten Filter: hier fehlt noch ein Zeitfenster. */
+  #watch-ranges.needs-range { outline: 2px solid #f59e0b; outline-offset: 3px; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -83,6 +85,7 @@
         </div>
       </div>
       <svg id="chart" viewBox="0 0 600 220" style="width: 100%; height: auto; display: block;"></svg>
+      <div id="data-warning" style="font-size: 11px; color: #b45309;"></div>
 
       <!-- Indikator-Charts werden aus der Registry erzeugt (renderIndicatorChartSkeletons). -->
       <div id="indicator-charts"></div>
@@ -102,7 +105,7 @@
             <span id="preset-current" style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"></span>
             <span style="flex-shrink: 0;">▾</span>
           </button>
-          <button id="watch-preset" type="button" title="Diesen Filter überwachen (Favorit)" style="background: none; border: none; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px;">☆</button>
+          <button id="watch-preset" type="button" title="Diesen Filter überwachen (danach Zeitfenster anhaken)" style="background: none; border: none; cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px;">☆</button>
           <button id="save-preset" type="button" title="Aktuelle Werte als Variante speichern">Speichern</button>
           <div id="preset-menu" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid #ccc; box-shadow: 0 2px 6px rgba(0,0,0,0.15); z-index: 10; max-height: 45vh; overflow-y: auto;">
             <!-- "Standard" steht fest oben (nicht sortierbar, nicht löschbar), darunter
@@ -113,6 +116,7 @@
         </div>
         <div id="watch-ranges" style="color: #666; font-size: 11px; margin-bottom: 4px;">
           <div style="margin-bottom: 2px;">Überwachen in diesen Zeitfenstern:</div>
+          <div id="watch-range-hint" style="color: #b45309; margin-bottom: 2px;"></div>
           <div style="display: flex; flex-wrap: wrap; gap: 2px 10px;">
             <label><input type="checkbox" data-watch-range="1d"> Tag</label>
             <label><input type="checkbox" data-watch-range="5d"> Woche</label>
@@ -179,6 +183,7 @@
       const ARCHIVED_INDICATORS_KEY = 'aktienanalyse-archived-indicators';
       const INDICATOR_ORDER_KEY = 'aktienanalyse-indicator-order';
       const DEFAULT_PRESET_NAME = 'Standard';
+      const SELECTED_PRESET_KEY = 'aktienanalyse-selected-preset';
       const CUSTOM_PRESET_LABEL = 'Eigene (ungespeichert)';
       // ---------------------------------------------------------------------
       // Indikator-Registry
@@ -468,14 +473,33 @@
       }
 
       // Name der Variante, die exakt den aktuellen Werten entspricht (sonst null).
+      // Zuerst zählt die zuletzt ausdrücklich gewählte Variante: haben zwei Filter
+      // dieselben Werte, würden Stern, Zeitfenster und Verzögerung sonst still auf den
+      // falschen (den ersten passenden) Filter wirken.
       function matchingPresetName() {
+        const remembered = localStorage.getItem(SELECTED_PRESET_KEY);
+        const rememberedSettings = remembered && filterSettingsByName(remembered);
+        if (rememberedSettings && sameSettings(highlightSettings, rememberedSettings)) return remembered;
         if (sameSettings(highlightSettings, DEFAULT_HIGHLIGHT_SETTINGS)) return DEFAULT_PRESET_NAME;
-        return Object.keys(highlightPresets)
+        return orderedPresetNames()
           .find(name => sameSettings(highlightSettings, highlightPresets[name])) || null;
       }
 
-      // Gewählter Filter: rein aus den Werten abgeleitet (kein DOM-Zustand). Genau so
-      // wurde vorher auch das <select> vorbelegt.
+      function rememberSelectedPreset(name) {
+        localStorage.setItem(SELECTED_PRESET_KEY, name);
+      }
+
+      // Einen Filter aktiv schalten (Menü, Stern) und ihn als gewählt merken.
+      function activatePreset(name) {
+        const settings = filterSettingsByName(name);
+        if (!settings) return false;
+        rememberSelectedPreset(name);
+        applyHighlightSettings(settings);
+        return true;
+      }
+
+      // Gewählter Filter: aus den Werten abgeleitet, bei Gleichstand der gemerkte Name
+      // (siehe matchingPresetName). Weichen die Werte ab, ist es "Eigene (ungespeichert)".
       function selectedPresetName() {
         return matchingPresetName() || CUSTOM_PRESET_LABEL;
       }
@@ -537,10 +561,8 @@
       }
 
       function selectPreset(name) {
-        const settings = filterSettingsByName(name);
-        if (!settings) return;
         setPresetMenuOpen(false);
-        applyHighlightSettings(settings);
+        activatePreset(name);
       }
 
       // Eine Zeile im Filter-Menü: Ziehgriff, Stern (Überwachung = Benachrichtigungen),
@@ -571,7 +593,7 @@
         const star = document.createElement('button');
         star.type = 'button';
         star.textContent = watched ? '★' : '☆';
-        star.title = watched ? 'Überwachung beenden' : 'Diesen Filter überwachen (Favorit)';
+        star.title = watched ? 'Überwachung beenden' : 'Diesen Filter überwachen (danach Zeitfenster anhaken)';
         star.style.cssText = 'background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; flex-shrink: 0;';
         star.addEventListener('click', event => {
           event.stopPropagation();
@@ -667,6 +689,7 @@
         const isNew = !highlightPresets[name];
         highlightPresets[name] = { ...highlightSettings };
         localStorage.setItem(PRESETS_KEY, JSON.stringify(highlightPresets));
+        rememberSelectedPreset(name);
         // Neue Filter hängen hinten an; beim Überschreiben bleibt die Position.
         if (isNew) localStorage.setItem(PRESET_ORDER_KEY, JSON.stringify([...loadPresetOrder(), name]));
         renderPresetPicker();
@@ -739,9 +762,13 @@
         if (lastChartData && !needsReload) {
           rerenderHighlightCharts();
         } else {
-          loadChart(currentSymbol, currentRange);
+          // Beim Ziehen eines Reglers kommt alle 50 ms ein neuer Wert — erst nach einer
+          // kurzen Pause neu laden, statt für jeden Zwischenwert Yahoo anzufragen.
+          clearTimeout(settingsReloadTimer);
+          settingsReloadTimer = setTimeout(() => loadChart(currentSymbol, currentRange), 300);
         }
       }
+      let settingsReloadTimer = null;
 
       function updateHighlightSetting(name, value) {
         updateHighlightSettings({ [name]: value });
@@ -774,6 +801,12 @@
         loadHighlightSettings();
       }
 
+      // Laufende Abfragen der Zahlenfelder (während ein Pfeil gedrückt gehalten wird).
+      // EIN globaler pointerup-Listener beendet sie — früher kam bei jedem Neuaufbau des
+      // Panels ein weiterer Listener dazu, der nie wieder entfernt wurde.
+      const activeSettingPolls = new Set();
+      window.addEventListener('pointerup', () => activeSettingPolls.forEach(stop => stop()));
+
       function bindNumberSetting(input, settingName) {
         let lastValue = input.value;
         let pollTimer = null;
@@ -789,15 +822,16 @@
             clearInterval(pollTimer);
             pollTimer = null;
           }
+          activeSettingPolls.delete(stopPolling);
         };
 
         input.addEventListener('input', applyValue);
         input.addEventListener('pointerdown', () => {
           stopPolling();
           pollTimer = setInterval(applyValue, 50);
+          activeSettingPolls.add(stopPolling);
         });
         input.addEventListener('blur', stopPolling);
-        window.addEventListener('pointerup', stopPolling);
       }
 
       // Ein Zahlenfeld (mit Text davor/danach) in ein <label> hängen.
@@ -1387,20 +1421,22 @@
       }
 
       // ---------------------------------------------------------------------
-      // Handelszeit-Berechnung fürs Chart — 1:1-Port von server.py (Zeilen 517-711):
-      // is_trading_day, align_to_trading_window, open_seconds. Damit die Verzögerungs-
+      // Handelszeit-Berechnung fürs Chart — Port von is_trading_day,
+      // align_to_trading_window und open_seconds aus server.py. Damit die Verzögerungs-
       // Einstellung ("Erst benachrichtigen nach ...") im Chart genau denselben Zeitpunkt
-      // zeigt, zu dem auch wirklich eine Mail käme. Zeitstempel sind wie überall im
-      // Frontend Unix-Sekunden (siehe z.B. `new Date(timestamps[i] * 1000)`).
+      // zeigt, zu dem auch wirklich eine Mail käme. Die Handelstage selbst liefert der
+      // Server mit der Kurshistorie (tradingDays, deutscher Kalender aus dem DAX) — es ist
+      // derselbe Kalender, nach dem er meldet. Zeitstempel sind Unix-Sekunden.
       // ---------------------------------------------------------------------
       const QUIET_END_SECONDS = 7 * 3600 + 30 * 60;      // ab 07:30 zählt Handelszeit
       const QUIET_START_SECONDS = 23 * 3600;             // ab 23:00 ist Ruhe
       const OPEN_SECONDS_PER_DAY = QUIET_START_SECONDS - QUIET_END_SECONDS;
-      const TRADING_GRID_RANGES = new Set(['5d', '1mo', '1y', '5y', '10y']);
 
+      // Lokaler Kalendertag als "JJJJ-MM-TT" — dasselbe Format wie tradingDays vom Server.
       function dayKey(ts) {
         const d = new Date(ts * 1000);
-        return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
       }
 
       function daytimeSeconds(ts) {
@@ -1408,24 +1444,24 @@
         return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
       }
 
-      // Pendant zu trading_days_from() (server.py:628-641): welche Kalendertage im
-      // aktuell geladenen Kerzenraster tatsächlich gehandelt wurden. Nur für Zeitfenster
-      // mit ausreichend dichtem Tagesraster aussagekräftig (server.py:529-532) — sonst
-      // entscheidet allein Mo-Fr (tradingDays = null).
-      function tradingDaysFromTimestamps(timestamps, rangeKey) {
-        if (!TRADING_GRID_RANGES.has(rangeKey)) return null;
-        const days = new Set();
-        timestamps.forEach(t => days.add(dayKey(t)));
-        return days.size ? days : null;
+      // Handelstage aus der Server-Antwort; null = unbekannt, dann gilt schlicht Mo-Fr.
+      function tradingDaysFromServer(days) {
+        if (!Array.isArray(days) || !days.length) return null;
+        const set = new Set(days);
+        set.last = days.reduce((x, y) => (x > y ? x : y));
+        return set;
       }
 
       function isTradingDay(ts, tradingDays) {
-        if (tradingDays) return tradingDays.has(dayKey(ts));
         const wd = new Date(ts * 1000).getDay(); // 0 = So, 6 = Sa
-        return wd >= 1 && wd <= 5;
+        if (wd === 0 || wd === 6) return false;
+        if (!tradingDays) return true;
+        const key = dayKey(ts);
+        // Tage nach dem letzten bekannten sind (noch) nicht als Feiertag belegt.
+        return tradingDays.has(key) || key > tradingDays.last;
       }
 
-      // Port von align_to_trading_window() (server.py:660-676).
+      // Port von align_to_trading_window() in server.py.
       function alignToTradingWindow(ts, tradingDays) {
         for (let i = 0; i < 14; i++) {
           const daytime = daytimeSeconds(ts);
@@ -1439,7 +1475,7 @@
         return ts;
       }
 
-      // Port von open_seconds() (server.py:689-711): vergangene Handelszeit zwischen
+      // Port von open_seconds() in server.py: vergangene Handelszeit zwischen
       // zwei Zeitpunkten, ohne Nächte/Wochenenden/Feiertage.
       function openSeconds(start, end, tradingDays) {
         let total = 0, cursor = start;
@@ -1460,7 +1496,7 @@
 
       // Kürzt jeden Signal-Lauf auf den Teil ab dem Zeitpunkt, an dem die eingestellte
       // Mindestdauer (in echten Handelstagen) erreicht ist — genau der Moment, an dem
-      // auch die erste Mail käme (vgl. fire_due_milestones() in server.py:1176-1200).
+      // auch die erste Mail käme (vgl. fire_due_milestones() in decide_alert, server.py).
       // Läufe, die die Schwelle nie erreichen, entfallen ganz. minDelayDays = 0 lässt
       // die Läufe unverändert (heutiges Verhalten).
       function applyMinDelay(ranges, timestamps, minDelayDays, tradingDays) {
@@ -1535,7 +1571,7 @@
         const rawRanges = computeHighlightRanges(built, data.timestamps, highlightSettings);
         // Ist der aktuelle Filter überwacht und hat eine Mindestdauer eingestellt, zeigen
         // die Balken nur den Teil eines Laufs, der auch wirklich eine Mail ausgelöst hätte.
-        const tradingDays = tradingDaysFromTimestamps(data.timestamps, currentRange);
+        const tradingDays = tradingDaysFromServer(data.tradingDays);
         const highlightRanges = applyMinDelay(rawRanges, data.timestamps, currentWatchDelayDays(), tradingDays);
 
         renderChart(data.closes, data.timestamps, currentRange, [
@@ -1766,12 +1802,19 @@
         }
       }
 
+      // Jede Anfrage bekommt eine Nummer; nur die jüngste darf zeichnen. Sonst überschreibt
+      // eine langsame Antwort für das vorige Symbol/Zeitfenster den gerade gewählten Chart.
+      let chartRequestId = 0;
+      let dataRequestId = 0;
+
       async function loadChart(symbol, rangeKey) {
+        const requestId = ++chartRequestId;
         try {
           const res = await fetch(`/api/history?symbol=${encodeURIComponent(symbol)}`
             + `&range=${encodeURIComponent(rangeKey)}`
-            + `&maWindow=${encodeURIComponent(highlightSettings.maDeviationWindow)}`);
+            + `&maWindow=${encodeURIComponent(Math.round(highlightSettings.maDeviationWindow))}`);
           const data = await res.json();
+          if (requestId !== chartRequestId) return;
           if (data.error) throw new Error(data.error);
           lastChartData = data;
 
@@ -1807,6 +1850,7 @@
               : '';
           renderQuoteSource(data.quote, data.timestamps);
         } catch (err) {
+          if (requestId !== chartRequestId) return;
           document.getElementById('range-change').textContent = 'Fehler';
           document.getElementById('current-price').textContent = '';
           document.getElementById('quote-source').textContent = '';
@@ -1839,27 +1883,45 @@
         el.textContent = '';
       }
 
+      // Name des angezeigten Papiers, sobald der Server ihn geliefert hat (für neue Favoriten).
+      let currentMarket = null;
+      const DATA_SOURCE_LABELS = { fearGreed: 'Fear & Greed', smartDumbMoney: 'Smart/Dumb Money (COT)' };
+
       async function loadData(symbol) {
+        const requestId = ++dataRequestId;
+        const warning = document.getElementById('data-warning');
         try {
           const res = await fetch(`/api/data?symbol=${encodeURIComponent(symbol)}`);
           const data = await res.json();
-          if (data.error) throw new Error(data.error);
+          if (requestId !== dataRequestId) return;
+          const errors = data.errors || {};
 
+          // Jede Quelle für sich: fällt eine aus, bleibt der letzte Stand der anderen
+          // stehen, statt dass alle Balken still verschwinden.
           const fg = data.fearGreed;
           const feargreedCurrentEl = document.getElementById('feargreed-current');
-          if (feargreedCurrentEl) feargreedCurrentEl.textContent = `${fg.score.toFixed(1)} (${fg.rating})`;
-
-          fearGreedHistory = fg.history || [];
-          smartDumbHistory = (data.smartDumbMoney || {}).history || [];
+          if (fg) {
+            if (feargreedCurrentEl) feargreedCurrentEl.textContent = `${fg.score.toFixed(1)} (${fg.rating})`;
+            fearGreedHistory = fg.history || [];
+          }
+          if (data.smartDumbMoney) smartDumbHistory = data.smartDumbMoney.history || [];
           // Die Historie kann nach dem Kurschart eintreffen. Dann wurden die Balken
           // ohne Fear&Greed-Werte (= gar nicht) berechnet -> komplett neu rendern.
           if (lastChartData) {
             rerenderHighlightCharts();
           }
 
-          document.getElementById('selected-instrument').textContent =
-            `${data.market.name} (${data.market.symbol})`;
+          if (data.market && data.market.symbol === currentSymbol) {
+            currentMarket = data.market;
+            document.getElementById('selected-instrument').textContent =
+              `${data.market.name} (${data.market.symbol})`;
+          }
 
+          const missing = Object.keys(DATA_SOURCE_LABELS).filter(key => errors[key]);
+          warning.textContent = missing.length
+            ? `${missing.map(key => DATA_SOURCE_LABELS[key]).join(' und ')} gerade nicht abrufbar — `
+              + 'Filter mit diesem Indikator zeigen deshalb keine neuen Balken.'
+            : '';
         } catch (err) {
           console.error(err);
         }
@@ -1954,6 +2016,8 @@
 
       function selectSymbol(symbol) {
         currentSymbol = symbol;
+        currentMarket = null;
+        document.getElementById('selected-instrument').textContent = symbol;
         localStorage.setItem(LAST_SYMBOL_KEY, symbol);
         // Einstellungen gelten global und bleiben beim Symbolwechsel unverändert.
         loadData(currentSymbol);
@@ -2109,8 +2173,9 @@
         if (isFavorite) {
           saveFavorites(favs.filter(f => f.symbol !== currentSymbol));
         } else {
-          const name = document.getElementById('selected-instrument').textContent
-            .replace(` (${currentSymbol})`, '');
+          // Name aus den Serverdaten; sind die noch unterwegs, vorerst das Symbol.
+          const name = currentMarket && currentMarket.symbol === currentSymbol
+            ? currentMarket.name : currentSymbol;
           // Neue Favoriten standardmäßig ohne Benachrichtigung (Opt-in über die Glocke).
           favs.push({ symbol: currentSymbol, name, notify: false });
           saveFavorites(favs);
@@ -2145,7 +2210,7 @@
       const DEFAULT_MIN_DELAY_DAYS = 0;
       const MIN_DELAY_OPTIONS = [0, 1, 2, 3, 7, 14];
       let notifications = [];
-      let serverInfo = { mailConfigured: false, intervalSeconds: 300, mailStatus: null };
+      let serverInfo = { mailConfigured: false, intervalSeconds: 300, cooldownSeconds: 6 * 3600, mailStatus: null };
 
       function loadWatchedFilters() {
         const stored = readStored(WATCHED_FILTERS_KEY, []);
@@ -2220,6 +2285,12 @@
         star.style.opacity = disabled ? '0.35' : '1';
         star.textContent = entry ? '★' : '☆';
 
+        // Hinweis nach ☆: gilt nur, bis ein Zeitfenster angehakt oder ein anderer Filter gewählt ist.
+        if (entry || pendingWatchName !== selected) pendingWatchName = null;
+        document.getElementById('watch-ranges').classList.toggle('needs-range', !!pendingWatchName);
+        document.getElementById('watch-range-hint').textContent = pendingWatchName
+          ? `Zeitfenster anhaken, um „${pendingWatchName}“ zu überwachen.` : '';
+
         const chosen = entry ? entry.ranges : [];
         document.querySelectorAll('#watch-ranges input[data-watch-range]').forEach(box => {
           box.checked = chosen.includes(box.dataset.watchRange);
@@ -2239,7 +2310,7 @@
                 + `${f.minDelayDays ? `, ab ${f.minDelayDays} Tag${f.minDelayDays === 1 ? '' : 'en'}` : ''}`
                 + `${f.symbols ? `, nur ${f.symbols.map(symbolLabel).join(', ')}` : ''})`)
               .join('; ') + favoritesSuffix()
-          : 'Kein Filter überwacht (☆ markiert die Variante und wählt ein Zeitfenster).';
+          : 'Kein Filter überwacht (Zeitfenster beim Filter anhaken).';
       }
 
       function symbolLabel(symbol) {
@@ -2315,20 +2386,27 @@
         return ` — für ${notified} von ${favs.length} Favoriten`;
       }
 
-      // Stern: schaltet die Überwachung ganz an oder aus. Beim Einschalten wird das
-      // gerade angezeigte Zeitfenster vorbelegt, damit sofort etwas überwacht wird.
+      // Stern: ★ beendet die Überwachung. ☆ überwacht NICHT von sich aus — welche
+      // Zeitfenster geprüft werden, bestimmen allein die Häkchen darunter. Früher trug
+      // der Stern das gerade angezeigte Chart-Fenster ein; stand der Chart auf „Woche",
+      // kamen Wochen-Mails, ohne dass „Woche" je angehakt war. Jetzt wählt ☆ den Filter
+      // aus und markiert die Häkchen, die zum Überwachen noch fehlen.
       // Ohne Namen gilt der ausgewählte Filter (Knopf neben dem Menü); die Sterne in
       // den Menüzeilen geben ihren eigenen Filter mit.
+      let pendingWatchName = null;
+
       function toggleWatchedFilter(name = selectedPresetName()) {
         if (name === CUSTOM_PRESET_LABEL || !filterSettingsByName(name)) return;
         const watched = loadWatchedFilters();
         if (watched.some(f => f.name === name)) {
           saveWatchedFilters(watched.filter(f => f.name !== name));
-        } else {
-          const preset = RANGE_LABELS[currentRange] ? currentRange : DEFAULT_ALERT_RANGE;
-          saveWatchedFilters([...watched, { name, ranges: [preset], symbols: null }]);
-          requestCheck();
+          return;
         }
+        if (name !== selectedPresetName()) activatePreset(name);
+        setPresetMenuOpen(false);
+        pendingWatchName = name;
+        updateWatchUi();
+        document.getElementById('watch-ranges').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
 
       // Einzelnes Zeitfenster für den gewählten Filter an-/abwählen. Wird das letzte
@@ -2491,12 +2569,14 @@
 
       // Gemeldet wird nach der Watchlist des SERVERS, angezeigt wird der localStorage.
       // Solange beide gleich sind, fällt eine Abweichung nie auf — deshalb hier der
-      // Abgleich bei jedem Abruf der Glocke. Verglichen werden Name und Zeitfenster,
-      // weil genau die bestimmen, wofür eine Mail rausgeht.
+      // Abgleich bei jedem Abruf der Glocke. Verglichen wird alles, was bestimmt, wofür
+      // eine Mail rausgeht: Name, Zeitfenster, Mindestdauer und Werte-Auswahl.
       function watchlistFingerprint(filters) {
         return (filters || [])
-          .filter(f => f && f.name)
-          .map(f => `${f.name} (${(f.ranges || []).map(r => RANGE_LABELS[r] || r).sort().join(', ')})`)
+          .filter(f => f && f.name && (f.ranges || []).length)
+          .map(f => `${f.name} (${(f.ranges || []).map(r => RANGE_LABELS[r] || r).sort().join(', ')}`
+            + `${f.minDelayDays ? `, ab ${f.minDelayDays} Tagen` : ''}`
+            + `${Array.isArray(f.symbols) ? `, nur ${[...f.symbols].sort().join(', ')}` : ''})`)
           .sort()
           .join('; ');
       }
@@ -2513,13 +2593,21 @@
           'watchlist');
       }
 
-      async function requestCheck() {
-        try {
-          await fetch('/api/alerts/check', { method: 'POST' });
-        } catch (err) {
-          console.error(err);
-        }
-        refreshNotifications();
+      // Sofort prüfen lassen, nachdem sich die Überwachung geändert hat. Entprellt,
+      // damit mehrere Häkchen hintereinander nur EINE Prüfung auslösen, und erst nach
+      // dem Upload — sonst prüft der Server noch mit der alten Watchlist.
+      let checkTimer = null;
+      function requestCheck() {
+        clearTimeout(checkTimer);
+        checkTimer = setTimeout(async () => {
+          try {
+            await pushConfig();
+            await fetch('/api/alerts/check', { method: 'POST' });
+          } catch (err) {
+            console.error(err);
+          }
+          refreshNotifications();
+        }, 1500);
       }
 
       async function refreshNotifications() {
@@ -2530,6 +2618,7 @@
           serverInfo = {
             mailConfigured: !!data.mailConfigured,
             intervalSeconds: data.intervalSeconds || serverInfo.intervalSeconds,
+            cooldownSeconds: data.cooldownSeconds || serverInfo.cooldownSeconds,
             mailStatus: data.mailStatus || null,
           };
           checkWatchlistDivergence(data.watchlist);
@@ -2552,6 +2641,7 @@
       function showNotificationContext(entry) {
         const settings = filterSettingsByName(entry.filter);
         if (settings) {
+          rememberSelectedPreset(entry.filter);
           highlightSettings = normalizeSettings(settings);
           saveHighlightSettings();
           loadHighlightSettings();
@@ -2629,7 +2719,7 @@
         footer.style.cssText = 'padding: 6px 8px; font-size: 11px; color: #999;';
         footer.textContent = `Der Server prüft alle ${Math.round(serverInfo.intervalSeconds / 60)}`
           + ' Minuten, auch bei geschlossenem Browser. Nach einer Meldung bleibt derselbe'
-          + ' Wert 6 Stunden lang still. ' + mailFooterText();
+          + ` Wert ${Math.round(serverInfo.cooldownSeconds / 3600)} Stunden lang still. ` + mailFooterText();
         list.appendChild(footer);
 
         const unread = notifications.filter(e => !e.read).length;
@@ -2729,6 +2819,7 @@
         if (filter) {
           const settings = filterSettingsByName(filter);
           if (settings) {
+            rememberSelectedPreset(filter);
             highlightSettings = normalizeSettings(settings);
             saveHighlightSettings();
             loadHighlightSettings();
@@ -2788,6 +2879,17 @@
         }
         setInterval(refreshQuotes, CHART_POLL_MS);
         document.addEventListener('visibilitychange', refreshQuotes);
+        // Ein Tab, der stundenlang offen war, holt beim Zurückkehren den Stand der
+        // anderen Geräte — sonst scheitert seine nächste Änderung als Konflikt (409).
+        document.addEventListener('visibilitychange', async () => {
+          if (document.visibilityState !== 'visible') return;
+          const before = configBaseUpdated;
+          await pullConfig();
+          if (configBaseUpdated !== before) {
+            loadHighlightSettings();
+            renderFavorites();
+          }
+        });
       })();
     </script>
 </body>
